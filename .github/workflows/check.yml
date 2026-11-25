@@ -52,6 +52,7 @@ jobs:
           bash tests/test-build.sh
           bash tests/test-publish.sh
           bash tests/test-published.sh
+          bash tests/test-attest.sh
           python3 tests/test-compare.py
           python3 tests/test-names.py
           python3 tests/test-license.py
