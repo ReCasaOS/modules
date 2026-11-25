@@ -49,37 +49,45 @@ def read_retired(path):
         name, unit, route = words
         if not (NAME_RE.fullmatch(name) and UNIT_RE.fullmatch(unit) and (route == "-" or ROUTE_RE.fullmatch(route))):
             raise bad("line %d has a name, a unit or a route out of the catalogue's patterns" % n)
-        if name in retired or unit in units or (route != "-" and route in routes):
+        if name in retired or unit in units or (route != "-" and route_key(route) in routes):
             raise bad("line %d repeats a name, a unit or a route" % n)
         retired[name] = (unit, route)
         units.add(unit)
-        routes.add(route)
+        routes.add(route_key(route))
     return retired
+
+
+def route_key(route):
+    """A route is reserved by its part after the API version, as the builder keys it: /v2/old and /v3/old are one."""
+    return route.lstrip("/").partition("/")[2] if route != "-" else "-"
 
 
 def unit_route(entry):
     m = entry["manifest"]
-    return m.get("unit"), m.get("gateway_route", "-")
+    unit, route = m.get("unit"), m.get("gateway_route", "-")
+    if not isinstance(unit, str) or not isinstance(route, str):
+        raise compare.Refused("Module %s: the unit or the route of its manifest is not a string." % entry["name"])
+    return unit, route
 
 
 def check(new, retired, published):
     units = {u: n for n, (u, _) in retired.items()}
-    routes = {r: n for n, (_, r) in retired.items() if r != "-"}
+    routes = {route_key(r): n for n, (_, r) in retired.items() if r != "-"}
     for name, e in sorted(new.items()):
         unit, route = unit_route(e)
         if name in retired:
             raise compare.Refused("Module %s: the name belongs to a retired module, and stays reserved." % name)
         if unit in units:
             raise compare.Refused("Module %s: the unit %s belongs to the retired module %s, and stays reserved." % (name, unit, units[unit]))
-        if route in routes:
-            raise compare.Refused("Module %s: the route %s belongs to the retired module %s, and stays reserved." % (name, route, routes[route]))
+        if route != "-" and route_key(route) in routes:
+            raise compare.Refused("Module %s: the route %s belongs to the retired module %s, and stays reserved." % (name, route, routes[route_key(route)]))
     for name, e in sorted(published.items()):
+        unit, route = unit_route(e)
         if name in new:
             continue
-        unit, route = unit_route(e)
         if name not in retired:
             raise compare.Refused("Module %s was published and is no longer listed: add its line to retired.env (%s %s %s), its name stays reserved." % (name, name, unit, route))
-        if retired[name] != (unit, route):
+        if (retired[name][0], route_key(retired[name][1])) != (unit, route_key(route)):
             raise compare.Refused("Module %s: retired.env has the unit and route %s %s, the published module had %s %s." % (name, *retired[name], unit, route))
 
 

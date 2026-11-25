@@ -93,15 +93,45 @@ check("a LICENSE twice is refused", rc == 1 and "twice" in err, err)
 rc, err = run(archive(M, ("license", text)))
 check("another case is not the file", rc == 1, err)
 
-# bigger than 256 MiB: refused before it is opened (a sparse file, never read)
+# bigger than 200 MiB: refused before it is opened (a sparse file, never read)
 big = os.path.join(T, "big.tar.gz")
 with open(big, "wb") as f:
-    f.truncate((256 << 20) + 1)
+    f.truncate((200 << 20) + 1)
 rc, err = run(big)
-check("an archive over 256 MiB is refused unread", rc == 1 and "256 MiB" in err, err)
+check("an archive over 200 MiB is refused unread", rc == 1 and "200 MiB" in err, err)
 
 bad = os.path.join(T, "bad.tar.gz")
 open(bad, "wb").write(b"not a tarball")
+# a header alone says a member is huge: refused before anything is decompressed past it
+import gzip
+counter[0] += 1
+hdr = os.path.join(T, "hdr%d.tar.gz" % counter[0])
+ti = tarfile.TarInfo("big.bin")
+ti.size = (400 << 20) + 1
+with gzip.open(hdr, "wb") as g:
+    g.write(ti.tobuf())
+rc, err = run(hdr)
+check("a member whose header passes the total bound is refused", rc == 1 and "400 MiB" in err, err)
+
+rc, err = run(archive(M, *[("f%d" % i, b"x") for i in range(5000)], ("LICENSE", text)))
+check("more than 5000 entries is refused", rc == 1 and "5000" in err, err)
+
+good = open(archive(M, ("LICENSE", text) , ("pad", os.urandom(50000))), "rb").read()
+cut = os.path.join(T, "cut.tar.gz")
+open(cut, "wb").write(good[:len(good) // 2])
+rc, err = run(cut)
+check("a truncated gzip is refused in one sentence", rc == 1 and "readable" in err and "Traceback" not in err, err)
+
+counter[0] += 1
+hard = os.path.join(T, "hard%d.tar.gz" % counter[0])
+with tarfile.open(hard, "w:gz") as tf:
+    ti = tarfile.TarInfo("LICENSE")
+    ti.type, ti.linkname = tarfile.LNKTYPE, "module.json"
+    tf.addfile(tarfile.TarInfo("module.json"))
+    tf.addfile(ti)
+rc, err = run(hard)
+check("a hard link named LICENSE is not a licence", rc == 1 and "regular" in err, err)
+
 rc, err = run(bad)
 check("a file that is no tarball is refused", rc == 1 and "readable" in err, err)
 

@@ -25,6 +25,11 @@ def check(name, ok, detail=""):
             print(detail)
 
 
+def assets(name):
+    base = "https://github.com/ReCasaOS/modules/releases/download/m-%s-v0.1.0/" % name
+    return {a: {"url": base + "linux-%s-casaos-%s-v0.1.0.tar.gz" % (a, name), "sha256": "b" * 64} for a in ("amd64", "arm64")}
+
+
 def entry(name, unit=None, route="default"):
     manifest = {"schema": 1, "name": name, "unit": unit or "casaos-%s.service" % name}
     if route == "default":
@@ -32,7 +37,7 @@ def entry(name, unit=None, route="default"):
     if route:
         manifest["gateway_route"] = route
     return {"name": name, "component": "CasaOS-" + name, "repository": "ReCasaOS/CasaOS-" + name, "tier": "core", "tag": "v0.1.0",
-            "commit": "a" * 40, "assets": {}, "manifest": manifest}
+            "commit": "a" * 40, "assets": assets(name), "manifest": manifest}
 
 
 def write(text):
@@ -123,6 +128,22 @@ check("a missing retired.env is refused", rc == 1, err)
 
 rc, err = run(write("{}"), retired)
 check("a catalogue that is not schema 3 is refused", rc == 1 and err, err)
+
+rc, err = run(catalogue(entry("fresh", "fresh.service", "/v3/old")), retired)
+check("a retired route is reserved under another API version", rc == 1 and "/v3/old" in err, err)
+
+other = write(HEADER + "old casaos-old.service /v3/old" + chr(10) + "noroute casaos-noroute.service -" + chr(10))
+rc, err = run(new, other, pub)
+check("a retired line may name the route under another API version", rc == 0, err)
+
+rc, err = run(catalogue(entry("virt")), write(HEADER + "a a.service /v2/a" + chr(10) + "b b.service /v3/a" + chr(10)))
+check("retired.env refused: a route twice under two versions", rc == 1 and "retired.env" in err, err)
+
+for label, bad_entry in (("a unit that is a number", entry("virt", unit=5)), ("a route that is a list", entry("virt", route=["/v2/x"]))):
+    rc, err = run(catalogue(bad_entry), retired)
+    check("new catalogue with " + label + ": one sentence", rc == 1 and "Traceback" not in err and "virt" in err and chr(10) not in err, err)
+    rc, err = run(new, retired, catalogue(bad_entry, entry("kept")))
+    check("published catalogue with " + label + ": one sentence", rc == 1 and "Traceback" not in err and "virt" in err and chr(10) not in err, err)
 
 rc, err = run()
 check("no argument is usage", rc == 2 and "usage" in err, err)

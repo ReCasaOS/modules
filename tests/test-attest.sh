@@ -17,7 +17,7 @@ fail() { echo "FAIL - $1"; failures=$((failures + 1)); }
 
 cat >"${T}/gh" <<'EOF'
 #!/usr/bin/env bash
-echo "$*" >>"${FAKE_GH_CALLS}"
+printf '%s\n' "$@" >>"${FAKE_GH_CALLS}"; printf -- '--\n' >>"${FAKE_GH_CALLS}"
 if [[ "$3" == "${FAKE_GH_FAIL_ON:-}" ]]; then
     printf 'no attestations found\nfor subject\n' >&2
     exit 1
@@ -37,17 +37,33 @@ run() { # run ARGS...: stdout and stderr to ${T}/out, status in ${status}
 }
 
 run alice/CasaOS-foo v0.1.2 "${COMMIT}" "${T}/one.tar.gz" "${T}/two.tar.gz"
-want="attestation verify ${T}/one.tar.gz --repo alice/CasaOS-foo --source-digest ${COMMIT} --source-ref refs/tags/v0.1.2 --deny-self-hosted-runners
-attestation verify ${T}/two.tar.gz --repo alice/CasaOS-foo --source-digest ${COMMIT} --source-ref refs/tags/v0.1.2 --deny-self-hosted-runners"
+expect() { printf '%s
+' attestation verify "$1" --repo "$2" --source-digest "${COMMIT}" --source-ref "refs/tags/$3" --deny-self-hosted-runners --; }
+calls() { grep -c '^--$' "${FAKE_GH_CALLS}"; }
+want="$(expect "${T}/one.tar.gz" alice/CasaOS-foo v0.1.2; expect "${T}/two.tar.gz" alice/CasaOS-foo v0.1.2)"
 [[ "${status}" == 0 && "$(cat "${FAKE_GH_CALLS}")" == "${want}" ]] && pass "two archives: the exact arguments, in order" || { fail "two archives: the exact arguments, in order"; cat "${FAKE_GH_CALLS}" "${T}/out"; }
 
 FAKE_GH_FAIL_ON="${T}/two.tar.gz" run alice/CasaOS-foo v0.1.2 "${COMMIT}" "${T}/one.tar.gz" "${T}/two.tar.gz"
-[[ "${status}" == 1 && "$(wc -l <"${FAKE_GH_CALLS}")" == 2 && "$(wc -l <"${T}/out")" == 1 ]] &&
+[[ "${status}" == 1 && "$(calls)" == 2 && "$(wc -l <"${T}/out")" == 1 ]] &&
     grep -q "alice/CasaOS-foo" "${T}/out" && grep -q "two.tar.gz" "${T}/out" && grep -q "not established" "${T}/out" && grep -q "no attestations found" "${T}/out" &&
     pass "a failure on the second: one sentence, exit 1, the first was verified" || { fail "a failure on the second"; cat "${T}/out"; }
 
 FAKE_GH_FAIL_ON="${T}/one.tar.gz" run alice/CasaOS-foo v0.1.2 "${COMMIT}" "${T}/one.tar.gz" "${T}/two.tar.gz"
-[[ "${status}" == 1 && "$(wc -l <"${FAKE_GH_CALLS}")" == 1 ]] && pass "a failure on the first stops there" || fail "a failure on the first stops there"
+[[ "${status}" == 1 && "$(calls)" == 1 ]] && pass "a failure on the first stops there" || fail "a failure on the first stops there"
+
+mkdir -p "${T}/sp ace"
+echo three >"${T}/sp ace/th ree.tar.gz"
+run alice/CasaOS-foo v0.1.2 "${COMMIT}" "${T}/sp ace/th ree.tar.gz"
+[[ "${status}" == 0 && "$(cat "${FAKE_GH_CALLS}")" == "$(expect "${T}/sp ace/th ree.tar.gz" alice/CasaOS-foo v0.1.2)" ]] && pass "an archive path with a space stays one argument" || { fail "an archive path with a space stays one argument"; cat "${FAKE_GH_CALLS}"; }
+
+nl=$'x
+::error::x'
+run "alice/${nl}" v0.1.2 "${COMMIT}" "${T}/one.tar.gz"
+[[ "${status}" == 1 && "$(wc -l <"${T}/out")" == 1 && -z "$(grep '^::' "${T}/out")" && ! -s "${FAKE_GH_CALLS}" ]] && pass "a refused repository with a newline stays on one line" || { fail "a newline in a refused repository"; cat "${T}/out"; }
+run alice/foo v0.1.2 "${COMMIT}" "${T}/${nl}.tar.gz"
+[[ "${status}" == 1 && "$(wc -l <"${T}/out")" == 1 && -z "$(grep '^::' "${T}/out")" ]] && pass "an archive path with a newline stays on one line" || { fail "a newline in an archive path"; cat "${T}/out"; }
+FAKE_GH_FAIL_ON="${T}/sp ace/th ree.tar.gz" run alice/CasaOS-foo v0.1.2 "${COMMIT}" "${T}/sp ace/th ree.tar.gz"
+[[ "${status}" == 1 && "$(wc -l <"${T}/out")" == 1 ]] && pass "a failure names a path with a space on one line" || fail "a failure names a path with a space"
 
 none() { # none LABEL ARGS...: refused with status 1 and no call
     local label="$1"

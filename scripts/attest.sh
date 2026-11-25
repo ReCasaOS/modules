@@ -22,7 +22,8 @@ set -euo pipefail
 GH="${GH:-gh}"
 
 usage() { echo "usage: scripts/attest.sh REPOSITORY TAG COMMIT ARCHIVE..." >&2; exit 2; }
-refuse() { echo "attest.sh: $*" >&2; exit 1; }
+# every printed value is cleaned: no newline, no control character, so none starts a line of a log
+refuse() { printf 'attest.sh: %s\n' "$(printf '%s' "$*" | tr -c '[:print:]' ' ')" >&2; exit 1; }
 
 [[ $# -ge 4 ]] || usage
 repo="$1" tag="$2" commit="$3"
