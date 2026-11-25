@@ -62,18 +62,12 @@ jobs:
           go-version-file: ${{ runner.temp }}/core-gomod/go.mod
           cache: false
 
-      # The catalogue published now: 404 is "nothing published yet"; any other failure stops here.
+      # The catalogue published now: "nothing published yet" only on a 404 while the repository has no
+      # release at all (asked with this job's read token); any other failure stops here.
       - name: Download the published catalogue
-        run: |
-          published="${RUNNER_TEMP}/published.json"
-          code="$(curl -sSL --retry 5 --retry-delay 10 -o "${published}" -w '%{http_code}' \
-            https://github.com/ReCasaOS/modules/releases/latest/download/catalogue-2.json)" ||
-            { echo "The published catalogue could not be downloaded."; exit 1; }
-          case "${code}" in
-          200) ;;
-          404) rm -f "${published}" ;; # nothing published yet
-          *) echo "The published catalogue answered HTTP ${code}."; exit 1 ;;
-          esac
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/published.sh "${RUNNER_TEMP}/published.json"
 
       - name: Build the catalogue, check it against the published one, prove that the core reads it
         run: |

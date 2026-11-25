@@ -104,5 +104,6 @@ On Linux, with bash, git, curl, Python 3.12 and Go, as a user that is not root:
 ```
 bash tests/test-build.sh                  # offline tests
 bash tests/test-publish.sh                # offline tests, with a fake gh
+bash tests/test-published.sh              # offline tests, with a fake gh and a fake curl
 bash scripts/build.sh 1 out/catalogue-2.json
 ```
