@@ -42,6 +42,10 @@ if [[ -n "${FAKE_BAD_SUM:-}" ]]; then
     exit 1
 fi
 mkdir -p "$2"
+if [[ -n "${FAKE_STAGE_FAILS_LATE:-}" ]]; then
+    echo "Failed to download the checksums of module x." >&2
+    exit 1
+fi
 carry=()
 [[ -z "${CARRY_CATALOGUE:-}" ]] || carry=(--carry "${CARRY_CATALOGUE}")
 list="$(python3 "${here}/build-modules-catalogue.py" list "$1" ${carry[@]+"${carry[@]}"})"
@@ -72,13 +76,13 @@ def carried(path):
 def is_carried(m, c):
     return m["owner"] != "ReCasaOS" and m["name"] in c and c[m["name"]]["tag"] == m["tag"]
 
-def entry(m, schema):
+def entry(m, schema, stage):
     if schema == 3:
         base = "https://github.com/ReCasaOS/modules/releases/download/m-%s-%s/" % (m["name"], m["tag"])
     else:
         base = "https://github.com/ReCasaOS/%s/releases/download/%s/" % (m["component"], m["tag"])
     assets = {arch: {"url": "%slinux-%s-casaos-%s-%s.tar.gz" % (base, arch, m["name"], m["tag"]),
-                     "sha256": hashlib.sha256((m["name"] + m["tag"] + arch).encode()).hexdigest()} for arch in ("amd64", "arm64")}
+                     "sha256": hashlib.sha256(open(os.path.join(stage, m["name"], "linux-%s-casaos-%s-%s.tar.gz" % (arch, m["name"], m["tag"])), "rb").read()).hexdigest()} for arch in ("amd64", "arm64")}
     e = dict(name=m["name"], tag=m["tag"], commit=m["commit"], tier=m["tier"], component=m["component"])
     if schema == 3:
         e["repository"] = "%s/%s" % (m["owner"], m["component"])
@@ -106,6 +110,8 @@ elif a[:1] == ["build"] and len(a) >= 5:
         sys.exit("usage")
     schema, env, stage = int(opts["--schema"]), a[-2], a[-1]
     doc = {"schema": schema, "serial": int(opts["--serial"]), "generated": opts["--generated"]}
+    if schema == 3 and os.environ.get("FAKE_SKEW_GENERATED"):
+        doc["generated"] = "2000-01-01T00:00:00Z"
     c = carried(opts["--carry"]) if "--carry" in opts else {}
     if schema == 3:
         doc["withdrawn"] = withdrawn(opts["--withdrawn"])
@@ -120,7 +126,7 @@ elif a[:1] == ["build"] and len(a) >= 5:
             continue
         if not os.path.exists(os.path.join(stage, m["name"], "checksums.txt")):
             sys.exit("error: module %s is not staged" % m["name"])
-        doc["modules"].append(entry(m, schema))
+        doc["modules"].append(entry(m, schema, stage))
     open(opts["--out"], "w").write(json.dumps(doc, indent=2) + "\n")
 elif a[:1] == ["proof"] and len(a) in (3, 5):
     schema = int(a[4]) if len(a) == 5 and a[3] == "--schema" else 3
@@ -268,8 +274,8 @@ run_build() { # run_build INSTALLER_COMMIT CORE_COMMIT SERIAL OUTDIR [VAR=value.
 # 1. the happy path: both catalogues with the serial asked for, and the archives of each module to copy
 out="${T}/out"
 if run_build "${INST_GOOD}" "${CORE_GOOD}" 7 "${out}" &&
-    python3 - "${out}" <<'EOF' &&
-import json, os, sys
+    python3 - "${out}" "${T}/files" <<'EOF' &&
+import hashlib, json, os, sys
 d = sys.argv[1]
 c2, c3 = (json.load(open(os.path.join(d, "catalogue-%d.json" % n))) for n in (2, 3))
 assert c2["schema"] == 2 and c3["schema"] == 3 and c2["serial"] == c3["serial"] == 7 and c2["generated"] == c3["generated"], (c2, c3)
@@ -279,6 +285,10 @@ assert set(os.listdir(os.path.join(d, "mirror"))) == want and len(want) == 3, wa
 for e in c3["modules"]:
     folder = os.path.join(d, "mirror", "m-%s-%s" % (e["name"], e["tag"]))
     assert sorted(os.listdir(folder)) == sorted(["checksums.txt"] + [a["url"].rsplit("/", 1)[1] for a in e["assets"].values()]), os.listdir(folder)
+    # the bytes: each archive is the one the catalogue digests, checksums.txt is the release's
+    for a in e["assets"].values():
+        assert hashlib.sha256(open(os.path.join(folder, a["url"].rsplit("/", 1)[1]), "rb").read()).hexdigest() == a["sha256"], a
+    assert open(os.path.join(folder, "checksums.txt"), "rb").read() == open(os.path.join(sys.argv[2], e["name"], "checksums.txt"), "rb").read()
 EOF
     grep -q "test only" "${T}/log" && grep -q "reads catalogue-2.json" "${T}/log" && grep -q "reads catalogue-3.json" "${T}/log" &&
     grep -q "OWNERS_BASE_URL=https://github.com CARRY_CATALOGUE=$" "${T}/log" && [[ ! -s "${T}/calls" ]]; then
@@ -304,10 +314,17 @@ else
 fi
 
 # 2. an archive that no longer matches its sum: the failure names the module, nothing at OUTDIR
-if ! run_build "${INST_GOOD}" "${CORE_GOOD}" 7 "${out}" FAKE_BAD_SUM=vuln-scan && grep -q "vuln-scan" "${T}/log" && [[ ! -e "${out}" ]]; then
-    pass "a sum that no longer matches fails, names the module, leaves no folder"
+if ! run_build "${INST_GOOD}" "${CORE_GOOD}" 7 "${out}" FAKE_BAD_SUM=vuln-scan && grep -q "vuln-scan" "${T}/log" &&
+    grep -q "^build.sh: The release files of the modules could not be fetched, or one does not match its checksums.txt" "${T}/log" && [[ ! -e "${out}" ]]; then
+    pass "a sum that no longer matches fails with build.sh's sentence (the stage folder never made), names the module, leaves no folder"
 else
-    fail "a sum that no longer matches fails, names the module, leaves no folder"; cat "${T}/log"
+    fail "a sum that no longer matches fails with build.sh's sentence (the stage folder never made), names the module, leaves no folder"; cat "${T}/log"
+fi
+if ! run_build "${INST_GOOD}" "${CORE_GOOD}" 7 "${out}" FAKE_STAGE_FAILS_LATE=1 &&
+    grep -q "^build.sh: The release files of the modules could not be fetched, or one does not match its checksums.txt" "${T}/log" && [[ ! -e "${out}" ]]; then
+    pass "a stage step that fails with its folder made fails with build.sh's sentence"
+else
+    fail "a stage step that fails with its folder made fails with build.sh's sentence"; cat "${T}/log"
 fi
 
 # 3. the core refuses the catalogue: failure, nothing at OUTDIR
@@ -331,6 +348,13 @@ if ! run_build "${INST_GOOD}" "${CORE_OTHER_SERIAL}" 7 "${out}" PYTHONOPTIMIZE=1
     pass "a core that reports another serial fails, with PYTHONOPTIMIZE=1 too"
 else
     fail "a core that reports another serial fails, with PYTHONOPTIMIZE=1 too"; cat "${T}/log"
+fi
+
+# 3c. two files that do not have the same time are refused
+if ! run_build "${INST_GOOD}" "${CORE_GOOD}" 7 "${out}" FAKE_SKEW_GENERATED=1 && grep -q "^build.sh: The two catalogues do not have the same serial and the same time" "${T}/log" && [[ ! -e "${out}" ]]; then
+    pass "two catalogues with another time fail, with no folder"
+else
+    fail "two catalogues with another time fail, with no folder"; cat "${T}/log"
 fi
 
 # 4. a commit in refs.env that is not 40 lower case hex digits is refused before any fetch
@@ -509,6 +533,16 @@ else
     fail "the same archive under the bound passes"; cat "${T}/log"
 fi
 make_files alice-tool v0.1.0
+# a checksums.txt over the bound is a file, not an archive
+make_files alice-tool v0.1.0
+head -c 2000 /dev/zero | tr ' ' x >>"${T}/files/alice-tool/checksums.txt"
+if ! run_build "${INST_GOOD}" "${CORE_GOOD}" 9 "${out}" MODULES_TEST_MAX_FILE_KIB=1 && grep -q "a downloaded file is larger than 1 KiB (alice-tool/checksums.txt)" "${T}/log" &&
+    ! grep -q "an archive is larger" "${T}/log" && [[ ! -e "${out}" ]]; then
+    pass "a checksums.txt over the bound is called a file, not an archive"
+else
+    fail "a checksums.txt over the bound is called a file, not an archive"; cat "${T}/log"
+fi
+make_files alice-tool v0.1.0
 
 # a name retired
 printf 'alice-tool casaos-alice-tool.service -\n' >>"${repo}/retired.env"
@@ -551,6 +585,26 @@ EOF
 else
     fail "a module of another owner already published is carried when its repository is gone: no mirror folder, no verification"; cat "${T}/log"
 fi
+
+# a published catalogue-3.json that another sha256 or another repository contradicts, for a tag it already holds
+for change in 'e["assets"]["amd64"]["sha256"] = "0" * 64' 'e["repository"] = "mallory/CasaOS-VirtManagement"'; do
+    mkdir -p "${T}/pub3m"
+    python3 - "${T}/pub3/catalogue-3.json" "${T}/pub3m/catalogue-3.json" "${change}" <<'EOF'
+import json, sys
+c = json.load(open(sys.argv[1]))
+e = {e["name"]: e for e in c["modules"]}["virt"]
+exec(sys.argv[3])
+json.dump(c, open(sys.argv[2], "w"))
+EOF
+    published="${T}/pub3m"
+    if ! run_build "${INST_GOOD}" "${CORE_GOOD}" 10 "${out}" && grep -q "^build.sh: The catalogue of schema 3 changes a module under a tag that is already published" "${T}/log" &&
+        grep -q "virt" "${T}/log" && [[ ! -e "${out}" ]]; then
+        pass "a module that changes under a published tag in catalogue-3.json fails (${change%% =*})"
+    else
+        fail "a module that changes under a published tag in catalogue-3.json fails (${change%% =*})"; cat "${T}/log"
+    fi
+done
+published="${T}/pub3"
 
 # a published module that is not listed any more, with no line in retired.env, is refused (names.py is given the published catalogue-3.json)
 cp "${T}/base.env" "${repo}/modules.env"

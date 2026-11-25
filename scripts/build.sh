@@ -151,14 +151,26 @@ mkdir -p "${result}/mirror"
 # is as large as the author makes it. A file cut at the bound is the sign of a larger one.
 status=0
 (
+    # (the unit of the bound is the KiB of bash, not the 512 bytes of its POSIX mode; no core file of a process killed at the bound)
+    unset POSIXLY_CORRECT
+    set +o posix
+    ulimit -c 0 2>/dev/null || true
     ulimit -f "${max_file_kib}" || exit 99
-    exec env CHECKSUMS_BASE_URL="${GITHUB_BASE}" OWNERS_BASE_URL=https://github.com CARRY_CATALOGUE="${published3}" PYTHON="${PYTHON}" \
+    exec env -u POSIXLY_CORRECT CHECKSUMS_BASE_URL="${GITHUB_BASE}" OWNERS_BASE_URL=https://github.com CARRY_CATALOGUE="${published3}" PYTHON="${PYTHON}" \
         bash "${installer}/stage-modules.sh" "${ROOT}/modules.env" "${work}/stage"
 ) || status=$?
 if [[ "${status}" != 0 ]]; then
     [[ "${status}" != 99 ]] || fail "The bound on the size of a downloaded file could not be set."
-    cut="$(find "${work}/stage" -type f -size "$((max_file_kib * 1024))c" 2>/dev/null | head -n 1)"
-    [[ -z "${cut}" ]] || fail "The release files of the modules could not be fetched: an archive is larger than ${max_file_text} (${cut#"${work}/stage/"})."
+    # (the stage folder may never have been made: a failure to find is no cut file)
+    cut=""
+    if [[ -d "${work}/stage" ]]; then
+        cut="$(find "${work}/stage" -type f -size "$((max_file_kib * 1024))c" 2>/dev/null | head -n 1)" || cut=""
+    fi
+    if [[ -n "${cut}" ]]; then
+        what="an archive"
+        [[ "${cut##*/}" != checksums.txt ]] || what="a downloaded file"
+        fail "The release files of the modules could not be fetched: ${what} is larger than ${max_file_text} (${cut#"${work}/stage/"})."
+    fi
     fail "The release files of the modules could not be fetched, or one does not match its checksums.txt (see above)."
 fi
 
