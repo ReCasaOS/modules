@@ -78,10 +78,14 @@ Each push on `main` runs `.github/workflows/publish.yml`. Its first job builds a
 catalogue exactly as the check does, read only. Its second job runs `scripts/publish.sh`, which
 creates the release `c<serial>` as a draft, attaches `catalogue-2.json`, downloads it back and
 requires the same bytes, and only then publishes it as the latest release. A failure before that
-point leaves a draft, and the published catalogue unchanged. Two publications never run at once.
+point leaves at most a draft, and the published catalogue unchanged. Two publications never run at
+once.
 
 The serial is the run number of the publication workflow, and it only goes up: `publish.sh`
 refuses a serial that is not above the one published.
+
+A published release is never deleted or edited by hand, and its assets are never replaced: a
+correction is a new merge.
 
 To see what is published: the latest release of this repository, or
 
