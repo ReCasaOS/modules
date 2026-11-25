@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Offline tests of scripts/publish.sh. No network: GH is a fake gh that keeps
-# the releases in a folder and writes each call it gets to a log. Needs bash
-# and python3.
+# Offline tests of scripts/publish.sh. No network: GH is a fake gh (tests/lib/fake-gh) that
+# keeps the releases in a folder and writes each call it gets to a log. Needs bash and python3.
 #
 #   bash tests/test-publish.sh
 
@@ -15,124 +14,93 @@ failures=0
 pass() { echo "ok   - $1"; }
 fail() { echo "FAIL - $1"; failures=$((failures + 1)); }
 
-# --- the fake gh: the release subcommands publish.sh uses ------------------
-# State in FAKE_GH_STATE: rel/<tag>/ per release (a file 'draft' while it is one, its assets), 'latest' (a tag), 'calls'.
-# FAKE_GH_FAIL="<subcommand>" or "<subcommand> <tag>" fails that call; FAKE_GH_ALTER_UPLOAD=1 stores other bytes than
-# the file uploaded; FAKE_GH_NOT_LATEST=1 publishes a draft without making it the latest.
-cat >"${T}/gh" <<'EOF'
-#!/usr/bin/env python3
-import json, os, shutil, sys
-S = os.environ["FAKE_GH_STATE"]
-a = sys.argv[1:]
-with open(os.path.join(S, "calls"), "a") as f:
-    f.write(" ".join(a) + "\n")
-rel = os.path.join(S, "rel")
-os.makedirs(rel, exist_ok=True)
-latest_file = os.path.join(S, "latest")
-latest = open(latest_file).read() if os.path.exists(latest_file) else None
-
-def opt(name):
-    return a[a.index(name) + 1]
-
-assert a[0] == "release" and opt("-R"), a
-cmd = a[1]
-tag = a[2] if len(a) > 2 and not a[2].startswith("-") else None
-if os.environ.get("FAKE_GH_FAIL") in (cmd, "%s %s" % (cmd, tag)):
-    sys.exit("fake gh: HTTP 502")
-if cmd == "list":
-    assert opt("--json") == "tagName,isDraft,isLatest", a
-    print(json.dumps([{"tagName": t, "isDraft": os.path.exists(os.path.join(rel, t, "draft")), "isLatest": t == latest}
-                      for t in sorted(os.listdir(rel))]))
-elif cmd == "download":
-    tag = tag or latest
-    if tag is None or not os.path.isdir(os.path.join(rel, tag)):
-        sys.exit("release not found")
-    src = os.path.join(rel, tag, opt("--pattern"))
-    if not os.path.exists(src):
-        sys.exit("no assets match the file pattern")
-    dst = os.path.join(opt("--dir"), os.path.basename(src))
-    if os.path.exists(dst):
-        sys.exit("%s already exists" % dst)
-    shutil.copy(src, dst)
-elif cmd == "create":
-    assert "--draft" in a and len(opt("--target")) == 40, a
-    os.makedirs(os.path.join(rel, tag))
-    open(os.path.join(rel, tag, "draft"), "w").close()
-elif cmd == "upload":
-    data = open(a[3], "rb").read()
-    if os.environ.get("FAKE_GH_ALTER_UPLOAD"):
-        data += b" "
-    open(os.path.join(rel, tag, os.path.basename(a[3])), "wb").write(data)
-elif cmd == "edit":
-    assert "--draft=false" in a and "--latest" in a, a
-    os.remove(os.path.join(rel, tag, "draft"))
-    if not os.environ.get("FAKE_GH_NOT_LATEST"):
-        open(latest_file, "w").write(tag)
-else:
-    sys.exit("fake gh: unexpected call %s" % a)
-EOF
+cp "${ROOT}/tests/lib/fake-gh" "${T}/gh"
 chmod +x "${T}/gh"
 
-catalogue() { # catalogue FILE SERIAL [VIRT_TAG]: a schema 2 catalogue
-    python3 - "$1" "$2" "${3:-v0.2.6}" <<'EOF'
-import json, sys
-m = {"name": "virt", "tag": sys.argv[3], "commit": "5" * 40, "tier": "core", "manifest": {"name": "virt"},
-     "assets": {a: {"url": "https://example.invalid/%s.tar.gz" % a, "sha256": "a" * 64} for a in ("amd64", "arm64")}}
-json.dump({"schema": 2, "serial": int(sys.argv[2]), "generated": "2026-11-25T12:00:00Z", "modules": [m]}, open(sys.argv[1], "w"), indent=2)
+make_out() { # make_out DIR SERIAL [VIRT_TAG] [GENERATED]: catalogue-2.json and catalogue-3.json of one build
+    mkdir -p "$1"
+    python3 - "$1" "$2" "${3:-v0.2.6}" "${4:-2026-11-25T12:00:00Z}" <<'EOF'
+import json, os, sys
+out, serial, tag, generated = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+m2 = {"name": "virt", "tag": tag, "commit": "5" * 40, "tier": "core", "manifest": {"name": "virt"},
+      "assets": {a: {"url": "https://example.invalid/%s.tar.gz" % a, "sha256": "a" * 64} for a in ("amd64", "arm64")}}
+m3 = dict(m2, repository="ReCasaOS/CasaOS-VirtManagement", component="CasaOS-VirtManagement")
+m3["assets"] = {a: {"url": "https://github.com/ReCasaOS/modules/releases/download/m-virt-%s/linux-%s-casaos-virt-%s.tar.gz" % (tag, a, tag),
+                    "sha256": "a" * 64} for a in ("amd64", "arm64")}
+json.dump({"schema": 2, "serial": serial, "generated": generated, "modules": [m2]}, open(os.path.join(out, "catalogue-2.json"), "w"), indent=2)
+json.dump({"schema": 3, "serial": serial, "generated": generated, "withdrawn": [], "modules": [m3]}, open(os.path.join(out, "catalogue-3.json"), "w"), indent=2)
 EOF
 }
 
-reset() { # reset [SERIAL]: a fresh GitHub, with release c<SERIAL> published as latest when given
+reset() { # reset [SERIAL [both]]: a fresh GitHub, with release c<SERIAL> published as latest when given (only catalogue-2.json unless "both")
     rm -rf "${T}/state"
     mkdir -p "${T}/state/rel"
     : >"${T}/state/calls"
     if [[ -n "${1:-}" ]]; then
-        mkdir -p "${T}/state/rel/c$1"
-        catalogue "${T}/state/rel/c$1/catalogue-2.json" "$1"
+        make_out "${T}/state/rel/c$1" "$1"
+        [[ "${2:-}" == both ]] || rm "${T}/state/rel/c$1/catalogue-3.json"
         printf 'c%s' "$1" >"${T}/state/latest"
     fi
 }
 
-run_publish() { # run_publish SERIAL FILE [VAR=value...]: output in ${T}/log
-    local serial="$1" file="$2"
+run_publish() { # run_publish SERIAL DIR [VAR=value...]: output in ${T}/log
+    local serial="$1" dir="$2"
     shift 2
     env GH="${T}/gh" FAKE_GH_STATE="${T}/state" GITHUB_REPOSITORY=ReCasaOS/modules \
         GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 "$@" \
-        bash "${ROOT}/scripts/publish.sh" "${serial}" "${file}" >"${T}/log" 2>&1
+        bash "${ROOT}/scripts/publish.sh" "${serial}" "${dir}" >"${T}/log" 2>&1
 }
 
-verbs() { awk '{print $2 ($3 ~ /^c[0-9]+$/ ? " " $3 : "")}' "${T}/state/calls" | paste -sd, -; }
+verbs() { awk '$1 == "api" {print "api"; next} {print $2 ($3 ~ /^c[0-9]+$/ ? " " $3 : "")}' "${T}/state/calls" | paste -sd, -; }
 no_write() { ! grep -Eq '^release (create|upload|edit|delete)' "${T}/state/calls"; }
 is_draft() { [[ -e "${T}/state/rel/$1/draft" ]]; }
 latest() { cat "${T}/state/latest" 2>/dev/null; }
+same_files() { cmp -s "${T}/state/rel/$1/catalogue-2.json" "${new}/catalogue-2.json" && cmp -s "${T}/state/rel/$1/catalogue-3.json" "${new}/catalogue-3.json"; }
 
-new="${T}/new.json"
+new="${T}/new"
 
-# 1. first publication: nothing published yet is serial 0, the release is made in the order asked
+# 1. first publication of all: nothing published yet is serial 0; the release is made in the order asked, with both files
 reset
-catalogue "${new}" 1
+make_out "${new}" 1
 if run_publish 1 "${new}" &&
-    [[ "$(verbs)" == "list,create c1,upload c1,download c1,edit c1,download" ]] &&
-    ! is_draft c1 && [[ "$(latest)" == c1 ]] && cmp -s "${T}/state/rel/c1/catalogue-2.json" "${new}"; then
-    pass "first publication: draft, file, check, publish, read back, in that order"
+    [[ "$(verbs)" == "api,api,view c1,create c1,upload c1,download c1,download c1,edit c1,api,download,download" ]] &&
+    ! is_draft c1 && [[ "$(latest)" == c1 ]] && same_files c1; then
+    pass "first publication: draft, two files, check, publish, read back, in that order"
 else
-    fail "first publication: draft, file, check, publish, read back, in that order"; cat "${T}/log" "${T}/state/calls"
+    fail "first publication: draft, two files, check, publish, read back, in that order"; cat "${T}/log" "${T}/state/calls"
 fi
 
-# 2. a serial above the published one passes
+# 2. the first publication of schema 3 over a latest release that has only catalogue-2.json (Review Focus 3)
 reset 5
-catalogue "${new}" 6 v0.2.7
-if run_publish 6 "${new}" && ! is_draft c6 && [[ "$(latest)" == c6 ]] &&
-    [[ "$(verbs)" == "list,download c5,create c6,upload c6,download c6,edit c6,download" ]]; then
-    pass "a serial above the published one is published as latest"
+rm -rf "${new}"
+make_out "${new}" 6 v0.2.7
+if run_publish 6 "${new}" && ! is_draft c6 && [[ "$(latest)" == c6 ]] && same_files c6 &&
+    [[ "$(verbs)" == "api,download c5,view c6,create c6,upload c6,download c6,download c6,edit c6,api,download,download" ]] &&
+    grep -q 'upload c6 .*catalogue-2.json .*catalogue-3.json' "${T}/state/calls"; then
+    pass "a serial above the published one, which has no catalogue-3.json, is published with both files as latest"
 else
-    fail "a serial above the published one is published as latest"; cat "${T}/log" "${T}/state/calls"
+    fail "a serial above the published one, which has no catalogue-3.json, is published with both files as latest"; cat "${T}/log" "${T}/state/calls"
+fi
+reset 5 both
+if run_publish 6 "${new}" && [[ "$(latest)" == c6 ]] && same_files c6; then
+    pass "a serial above a published one that has both files is published"
+else
+    fail "a serial above a published one that has both files is published"; cat "${T}/log" "${T}/state/calls"
+fi
+
+# 2b. the latest and the taken are asked through the API and by tag: any number of releases of the mirror
+reset 5
+for i in $(seq 1 150); do mkdir -p "${T}/state/rel/m-tool$i-v1.0.0"; done
+if run_publish 6 "${new}" && [[ "$(latest)" == c6 ]] && ! grep -q '^release list' "${T}/state/calls"; then
+    pass "150 other releases do not matter: no listing is read"
+else
+    fail "150 other releases do not matter: no listing is read"; cat "${T}/log"
 fi
 
 # 3. a serial equal to or below the published one: refused, nothing written
 for s in 5 4; do
     reset 5
-    catalogue "${new}" "${s}"
+    make_out "${new}" "${s}"
     if ! run_publish "${s}" "${new}" && no_write && grep -q "published serial 5" "${T}/log" && [[ "$(latest)" == c5 ]]; then
         pass "serial ${s} with 5 published is refused, nothing written"
     else
@@ -140,9 +108,10 @@ for s in 5 4; do
     fi
 done
 
-# 4. the attached file differs from the built one: never published, the draft is left and named
+make_out "${new}" 6 # (one more build of serial 6, for what follows)
+
+# 4. an attached file differs from the built one: never published, the draft is left and named
 reset 5
-catalogue "${new}" 6
 if ! run_publish 6 "${new}" FAKE_GH_ALTER_UPLOAD=1 && ! grep -q '^release edit' "${T}/state/calls" &&
     is_draft c6 && [[ "$(latest)" == c5 ]] && grep -q "draft release c6 is left unpublished" "${T}/log"; then
     pass "an attached file that differs is never published; the draft c6 is left and said"
@@ -152,7 +121,6 @@ fi
 
 # 5. a failure after the draft exists (the upload fails) leaves a draft and says so
 reset 5
-catalogue "${new}" 6
 if ! run_publish 6 "${new}" FAKE_GH_FAIL=upload && ! grep -q '^release edit' "${T}/state/calls" &&
     is_draft c6 && [[ "$(latest)" == c5 ]] && grep -q "draft release c6 is left unpublished" "${T}/log"; then
     pass "a failed upload leaves the draft c6 unpublished and says so"
@@ -162,9 +130,16 @@ fi
 reset 5
 if ! run_publish 6 "${new}" FAKE_GH_FAIL="download c6" && ! grep -q '^release edit' "${T}/state/calls" &&
     is_draft c6 && grep -q "draft release c6 is left unpublished" "${T}/log"; then
-    pass "a failed download of the attached file leaves the draft c6 unpublished and says so"
+    pass "a failed download of the attached files leaves the draft c6 unpublished and says so"
 else
-    fail "a failed download of the attached file leaves the draft c6 unpublished and says so"; cat "${T}/log" "${T}/state/calls"
+    fail "a failed download of the attached files leaves the draft c6 unpublished and says so"; cat "${T}/log" "${T}/state/calls"
+fi
+reset 5
+if ! run_publish 6 "${new}" FAKE_GH_ALTER_DOWNLOAD=1 && ! grep -q '^release edit' "${T}/state/calls" &&
+    is_draft c6 && grep -q "draft release c6 is left unpublished" "${T}/log"; then
+    pass "a file that comes back from the draft with other bytes is never published"
+else
+    fail "a file that comes back from the draft with other bytes is never published"; cat "${T}/log" "${T}/state/calls"
 fi
 
 # 6. the publish call fails: the state is not known, and that is what is said
@@ -178,34 +153,64 @@ fi
 
 # 7. published, but the latest release is not the new one: fails, saying it is published
 reset 5
-if ! run_publish 6 "${new}" FAKE_GH_NOT_LATEST=1 && grep -q "c6 is published" "${T}/log"; then
-    pass "a latest address that serves another file fails, saying c6 is published"
+if ! run_publish 6 "${new}" FAKE_GH_NOT_LATEST=1 && grep -q "c6 is published" "${T}/log" && grep -q "c5" "${T}/log"; then
+    pass "a latest release that is not c6 fails, saying c6 is published"
 else
-    fail "a latest address that serves another file fails, saying c6 is published"; cat "${T}/log"
+    fail "a latest release that is not c6 fails, saying c6 is published"; cat "${T}/log"
 fi
 
-# 8. the file given is checked before anything is written
+# 8. the files given are checked before anything is written
 reset 5
-catalogue "${new}" 7
-if ! run_publish 6 "${new}" && [[ ! -s "${T}/state/calls" ]] && grep -q "serial 7" "${T}/log"; then
-    pass "a file whose serial is not SERIAL is refused before any call"
+make_out "${T}/o7" 7
+if ! run_publish 6 "${T}/o7" && [[ ! -s "${T}/state/calls" ]] && grep -q "serial 7" "${T}/log"; then
+    pass "files whose serial is not SERIAL are refused before any call"
 else
-    fail "a file whose serial is not SERIAL is refused before any call"; cat "${T}/log" "${T}/state/calls"
+    fail "files whose serial is not SERIAL are refused before any call"; cat "${T}/log" "${T}/state/calls"
+fi
+make_out "${T}/mixed" 6
+cp "${T}/o7/catalogue-3.json" "${T}/mixed/catalogue-3.json"
+if ! run_publish 6 "${T}/mixed" && [[ ! -s "${T}/state/calls" ]] && grep -q "catalogue-3.json" "${T}/log" && grep -q "serial 7" "${T}/log"; then
+    pass "a catalogue-3.json of another serial than the catalogue-2.json is refused before any call"
+else
+    fail "a catalogue-3.json of another serial than the catalogue-2.json is refused before any call"; cat "${T}/log" "${T}/state/calls"
+fi
+make_out "${T}/gen" 6 v0.2.6 2026-11-26T08:00:00Z
+cp "${T}/gen/catalogue-3.json" "${T}/mixed/catalogue-3.json"
+cp "${new}/catalogue-2.json" "${T}/mixed/catalogue-2.json"
+if ! run_publish 6 "${T}/mixed" && [[ ! -s "${T}/state/calls" ]] && grep -q "generated" "${T}/log"; then
+    pass "two files of one serial but not one generated time are refused before any call"
+else
+    fail "two files of one serial but not one generated time are refused before any call"; cat "${T}/log" "${T}/state/calls"
 fi
 printf '<!DOCTYPE html><html><body>Not Found</body></html>\n' >"${T}/html.json"
-if ! run_publish 6 "${T}/html.json" && [[ ! -s "${T}/state/calls" ]] && grep -q "not a schema 2 catalogue" "${T}/log"; then
-    pass "a file that is not a schema 2 catalogue is refused before any call"
+make_out "${T}/bad2" 6
+cp "${T}/html.json" "${T}/bad2/catalogue-2.json"
+if ! run_publish 6 "${T}/bad2" && [[ ! -s "${T}/state/calls" ]] && grep -q "not a schema 2 catalogue" "${T}/log"; then
+    pass "a catalogue-2.json that is not a schema 2 catalogue is refused before any call"
 else
-    fail "a file that is not a schema 2 catalogue is refused before any call"; cat "${T}/log"
+    fail "a catalogue-2.json that is not a schema 2 catalogue is refused before any call"; cat "${T}/log"
+fi
+make_out "${T}/bad3" 6
+cp "${T}/html.json" "${T}/bad3/catalogue-3.json"
+if ! run_publish 6 "${T}/bad3" && [[ ! -s "${T}/state/calls" ]] && grep -q "not a schema 3 catalogue" "${T}/log"; then
+    pass "a catalogue-3.json that is not a schema 3 catalogue is refused before any call"
+else
+    fail "a catalogue-3.json that is not a schema 3 catalogue is refused before any call"; cat "${T}/log"
+fi
+make_out "${T}/only2" 6
+rm "${T}/only2/catalogue-3.json"
+if ! run_publish 6 "${T}/only2" && [[ ! -s "${T}/state/calls" ]]; then
+    pass "a catalogue-3.json that is missing is refused before any call"
+else
+    fail "a catalogue-3.json that is missing is refused before any call"; cat "${T}/log" "${T}/state/calls"
 fi
 
 # 9. the published serial is read or nothing is written: never taken as 0 on a failure
 reset 5
-catalogue "${new}" 6
-if ! run_publish 6 "${new}" FAKE_GH_FAIL=list && no_write; then
-    pass "releases that cannot be listed: refused, nothing written"
+if ! run_publish 6 "${new}" FAKE_GH_FAIL=api && no_write; then
+    pass "a latest release that cannot be read: refused, nothing written"
 else
-    fail "releases that cannot be listed: refused, nothing written"; cat "${T}/log" "${T}/state/calls"
+    fail "a latest release that cannot be read: refused, nothing written"; cat "${T}/log" "${T}/state/calls"
 fi
 reset 5
 rm "${T}/state/rel/c5/catalogue-2.json"
@@ -224,9 +229,9 @@ fi
 reset 5
 rm "${T}/state/latest"
 if ! run_publish 6 "${new}" && no_write; then
-    pass "published releases but none is latest: refused, nothing written"
+    pass "releases but none latest (a 404 while a release exists): refused, nothing written"
 else
-    fail "published releases but none is latest: refused, nothing written"; cat "${T}/log" "${T}/state/calls"
+    fail "releases but none latest (a 404 while a release exists): refused, nothing written"; cat "${T}/log" "${T}/state/calls"
 fi
 
 # 10. a release c<SERIAL> already there (a draft of an earlier attempt of the same run): refused, named
@@ -236,6 +241,12 @@ if ! run_publish 6 "${new}" && no_write && grep -q "c6 already exists" "${T}/log
     pass "a release c6 that already exists (a draft) is refused, nothing written"
 else
     fail "a release c6 that already exists (a draft) is refused, nothing written"; cat "${T}/log" "${T}/state/calls"
+fi
+reset 5
+if ! run_publish 6 "${new}" FAKE_GH_FAIL="view c6" && no_write; then
+    pass "a release c6 that cannot be looked up is not read as absent: refused, nothing written"
+else
+    fail "a release c6 that cannot be looked up is not read as absent: refused, nothing written"; cat "${T}/log" "${T}/state/calls"
 fi
 
 # 11. only ReCasaOS/modules, unless the test variable says otherwise (and then it is said)
@@ -247,7 +258,7 @@ else
 fi
 reset 5
 if run_publish 6 "${new}" GITHUB_REPOSITORY=someone/modules MODULES_TEST_REPOSITORY=someone/modules &&
-    grep -q "test only" "${T}/log" && grep -q -- "-R someone/modules" "${T}/state/calls"; then
+    grep -q "test only" "${T}/log" && grep -q -- "-R someone/modules" "${T}/state/calls" && grep -q "repos/someone/modules/releases/latest" "${T}/state/calls"; then
     pass "MODULES_TEST_REPOSITORY allows another repository, and says so"
 else
     fail "MODULES_TEST_REPOSITORY allows another repository, and says so"; cat "${T}/log"
@@ -255,14 +266,14 @@ fi
 
 # 12. a published serial at or above 2^63 is not a catalogue, and a huge one is still compared as a number
 reset 9223372036854775808
-catalogue "${new}" 5
-if ! run_publish 5 "${new}" && no_write && grep -q "not a schema 2 catalogue" "${T}/log" && [[ "$(latest)" == c9223372036854775808 ]]; then
+make_out "${T}/o5" 5
+if ! run_publish 5 "${T}/o5" && no_write && grep -q "not a schema 2 catalogue" "${T}/log" && [[ "$(latest)" == c9223372036854775808 ]]; then
     pass "a published serial of 2^63 is refused, nothing written"
 else
     fail "a published serial of 2^63 is refused, nothing written"; cat "${T}/log" "${T}/state/calls"
 fi
 reset 9223372036854775806
-if ! run_publish 5 "${new}" && no_write && grep -q "published serial 9223372036854775806" "${T}/log"; then
+if ! run_publish 5 "${T}/o5" && no_write && grep -q "published serial 9223372036854775806" "${T}/log"; then
     pass "serial 5 with 9223372036854775806 published is refused as not above, nothing written"
 else
     fail "serial 5 with 9223372036854775806 published is refused as not above, nothing written"; cat "${T}/log" "${T}/state/calls"

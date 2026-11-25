@@ -47,15 +47,11 @@ jobs:
           go-version-file: ${{ runner.temp }}/core-gomod/go.mod
           cache: false
 
+      # every test of tests/, so that a new one cannot be forgotten here
       - name: Test the scripts
         run: |
-          bash tests/test-build.sh
-          bash tests/test-publish.sh
-          bash tests/test-published.sh
-          bash tests/test-attest.sh
-          python3 tests/test-compare.py
-          python3 tests/test-names.py
-          python3 tests/test-license.py
+          for t in tests/*.sh; do bash "${t}"; done
+          for t in tests/*.py; do python3 "${t}"; done
 
       # The catalogue published now: "nothing published yet" only on a 404 while the repository has no
       # release at all (asked with this job's read token); any other failure fails the check.
@@ -65,7 +61,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/published.sh "${RUNNER_TEMP}/published"
 
+      # GH_TOKEN: gh attestation verify (scripts/attest.sh) asks the API for the attestations of another
+      # owner's archives, and gh needs a token for that, even a read only one. That a read only token is
+      # enough, also in a pull request from a fork, is not proven until a module of another owner is built.
       - name: Build the catalogue, check it against the published one, prove that the core reads it
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: bash scripts/build.sh 1 out "${RUNNER_TEMP}/published"
 
       - name: Write the summary
@@ -74,4 +75,5 @@ jobs:
             python3 scripts/summary.py "${RUNNER_TEMP}/published" out
             echo
             echo "SHA-256 of the built catalogue-2.json: \`$(sha256sum out/catalogue-2.json | cut -d' ' -f1)\`"
+            echo "SHA-256 of the built catalogue-3.json: \`$(sha256sum out/catalogue-3.json | cut -d' ' -f1)\`"
           } >>"${GITHUB_STEP_SUMMARY}"
