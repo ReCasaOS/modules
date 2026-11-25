@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+# The fake gh of tests/test-publish.sh and tests/test-mirror.sh: the calls of scripts/publish.sh and
+# scripts/mirror.sh, over releases kept in a folder, each call written to a log. Needs python3.
+#
+# State in FAKE_GH_STATE: rel/<tag>/ per release (its assets, a file 'draft' while it is a draft, a file
+# 'nodigest' when the API gives no digest for its assets), 'latest' (a tag), 'calls' (one line per call).
+# Set in the environment:
+#   FAKE_GH_FAIL="<subcommand>" or "<subcommand> <tag>"  that call fails with an HTTP 502
+#   FAKE_GH_ALTER_UPLOAD=1       stores other bytes than the file uploaded
+#   FAKE_GH_ALTER_DOWNLOAD=1     serves other bytes than the ones stored, from a draft only
+#   FAKE_GH_NOT_LATEST=1         publishes a draft marked latest without making it the latest
+#   FAKE_GH_EDIT_LATEST=1        publishes a draft as the latest even when asked --latest=false
+import hashlib, json, os, shutil, sys
+
+S = os.environ["FAKE_GH_STATE"]
+a = sys.argv[1:]
+with open(os.path.join(S, "calls"), "a") as f:
+    f.write(" ".join(a) + "\n")
+rel = os.path.join(S, "rel")
+os.makedirs(rel, exist_ok=True)
+latest_file = os.path.join(S, "latest")
+latest = open(latest_file).read() if os.path.exists(latest_file) else None
+
+
+def opts(name):
+    return [a[i + 1] for i, v in enumerate(a) if v == name]
+
+
+def opt(name):
+    return opts(name)[0]
+
+
+def is_draft(tag):
+    return os.path.exists(os.path.join(rel, tag, "draft"))
+
+
+cmd = a[0] if a[0] == "api" else a[1]
+tag = a[2] if a[0] == "release" and len(a) > 2 and not a[2].startswith("-") else None
+if os.environ.get("FAKE_GH_FAIL") in (cmd, "%s %s" % (cmd, tag)):
+    sys.exit("fake gh: HTTP 502")
+
+if cmd == "api":
+    path = a[1]
+    repo = path.split("/")[1] + "/" + path.split("/")[2]
+    assert path.startswith("repos/%s/releases" % repo) and len(a) == 2, a
+    if path.endswith("/releases/latest"):
+        if latest is None:
+            sys.exit("gh: Not Found (HTTP 404)")
+        print(json.dumps({"tag_name": latest, "assets": [{"name": n} for n in sorted(os.listdir(os.path.join(rel, latest))) if n not in ("draft", "nodigest")]}))
+    else:
+        assert path.endswith("/releases?per_page=1"), a
+        print(json.dumps([{"tag_name": t} for t in sorted(os.listdir(rel))][:1]))
+    sys.exit(0)
+
+assert a[0] == "release" and opt("-R"), a
+if cmd == "view":
+    assert opt("--json").startswith("tagName,isDraft"), a
+    if tag is None or not os.path.isdir(os.path.join(rel, tag)):
+        sys.exit("release not found")
+    assets = []
+    for n in sorted(os.listdir(os.path.join(rel, tag))):
+        if n in ("draft", "nodigest"):
+            continue
+        d = {"name": n, "size": os.path.getsize(os.path.join(rel, tag, n))}
+        if not os.path.exists(os.path.join(rel, tag, "nodigest")):
+            d["digest"] = "sha256:" + hashlib.sha256(open(os.path.join(rel, tag, n), "rb").read()).hexdigest()
+        assets.append(d)
+    print(json.dumps({"tagName": tag, "isDraft": is_draft(tag), "assets": assets}))
+elif cmd == "download":
+    tag = tag or latest
+    if tag is None or not os.path.isdir(os.path.join(rel, tag)):
+        sys.exit("release not found")
+    for pattern in opts("--pattern"):
+        src = os.path.join(rel, tag, pattern)
+        if not os.path.exists(src):
+            sys.exit("no assets match the file pattern")
+        dst = os.path.join(opt("--dir"), os.path.basename(src))
+        if os.path.exists(dst):
+            sys.exit("%s already exists" % dst)
+        shutil.copy(src, dst)
+        if os.environ.get("FAKE_GH_ALTER_DOWNLOAD") and is_draft(tag):
+            with open(dst, "ab") as f:
+                f.write(b" ")
+elif cmd == "create":
+    assert "--draft" in a and len(opt("--target")) == 40, a
+    os.makedirs(os.path.join(rel, tag))
+    open(os.path.join(rel, tag, "draft"), "w").close()
+elif cmd == "upload":
+    files = [v for v in a[3:] if not v.startswith("-") and v != opt("-R")]
+    for path in files:
+        data = open(path, "rb").read()
+        if os.environ.get("FAKE_GH_ALTER_UPLOAD"):
+            data += b" "
+        open(os.path.join(rel, tag, os.path.basename(path)), "wb").write(data)
+elif cmd == "edit":
+    assert "--draft=false" in a and ("--latest" in a or "--latest=false" in a), a
+    os.remove(os.path.join(rel, tag, "draft"))
+    if ("--latest" in a and not os.environ.get("FAKE_GH_NOT_LATEST")) or os.environ.get("FAKE_GH_EDIT_LATEST"):
+        open(latest_file, "w").write(tag)
+else:
+    sys.exit("fake gh: unexpected call %s" % a)
