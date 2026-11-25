@@ -48,7 +48,9 @@ jobs:
           cache: false
 
       - name: Test the scripts
-        run: bash tests/test-build.sh
+        run: |
+          bash tests/test-build.sh
+          bash tests/test-publish.sh
 
       # The catalogue published now: 404 is "nothing published yet"; any other failure fails the check.
       # It is data: compare.py (run by build.sh) parses it strictly, nothing runs it.

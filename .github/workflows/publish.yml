@@ -1,0 +1,138 @@
+# The publication: at each push on main, builds the catalogue from modules.env (scripts/build.sh,
+# serial = the run number of this workflow) and publishes it as catalogue-2.json of the release
+# c<serial>, marked latest (scripts/publish.sh), which every box reads.
+#
+# Two jobs: building runs code fetched from the two repositories pinned in refs.env (the
+# installer's scripts, the core built and run with Go), and none of that may run where a token
+# can write here. `build` is read only and hands one file on; `publish` holds the write token
+# and runs only this repository's publish.sh and compare.py on that file.
+#
+# publish.sh refuses a serial that is not above the published one, so a renamed workflow, whose
+# run numbers start again at 1, publishes nothing until it is past it.
+name: Publish
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# one publication at a time, none cancelled half way
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # workflow_dispatch can be started on any branch: only main is published
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # 3.12: the Unicode tables of the Go that builds the core (see build-modules-catalogue.py)
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      # setup-go needs the Go version before build.sh fetches the core: take the go.mod of the pinned commit
+      - name: Read the go.mod of the pinned core
+        run: |
+          core_commit="$(sed -n 's/^CORE_COMMIT=\([0-9a-f]\{40\}\)$/\1/p' refs.env)"
+          [[ "${core_commit}" =~ ^[0-9a-f]{40}$ ]] || { echo "refs.env has no valid CORE_COMMIT."; exit 1; }
+          git init -q "${RUNNER_TEMP}/core-gomod"
+          git -C "${RUNNER_TEMP}/core-gomod" fetch -q --depth 1 https://github.com/ReCasaOS/CasaOS "${core_commit}"
+          git -C "${RUNNER_TEMP}/core-gomod" show FETCH_HEAD:go.mod >"${RUNNER_TEMP}/core-gomod/go.mod"
+
+      # (setup-go parses the go line only of a file named go.mod)
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: ${{ runner.temp }}/core-gomod/go.mod
+          cache: false
+
+      # The catalogue published now: 404 is "nothing published yet"; any other failure stops here.
+      - name: Download the published catalogue
+        run: |
+          published="${RUNNER_TEMP}/published.json"
+          code="$(curl -sSL --retry 5 --retry-delay 10 -o "${published}" -w '%{http_code}' \
+            https://github.com/ReCasaOS/modules/releases/latest/download/catalogue-2.json)" ||
+            { echo "The published catalogue could not be downloaded."; exit 1; }
+          case "${code}" in
+          200) ;;
+          404) rm -f "${published}" ;; # nothing published yet
+          *) echo "The published catalogue answered HTTP ${code}."; exit 1 ;;
+          esac
+
+      - name: Build the catalogue, check it against the published one, prove that the core reads it
+        run: |
+          published="${RUNNER_TEMP}/published.json"
+          if [[ -f "${published}" ]]; then
+            bash scripts/build.sh "${{ github.run_number }}" out/catalogue-2.json "${published}"
+          else
+            bash scripts/build.sh "${{ github.run_number }}" out/catalogue-2.json
+          fi
+
+      - name: Write the summary
+        run: |
+          {
+            python3 scripts/summary.py "${RUNNER_TEMP}/published.json" out/catalogue-2.json
+            echo
+            echo "SHA-256 of the built catalogue-2.json: \`$(sha256sum out/catalogue-2.json | cut -d' ' -f1)\`"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Hand the catalogue to the publish job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: catalogue
+          path: out/catalogue-2.json
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      # this repository only: publish.sh and the parser it uses (compare.py)
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Take the catalogue built
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: catalogue
+          path: out
+
+      - name: Publish it as the latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/publish.sh "${{ github.run_number }}" out/catalogue-2.json
+
+      # publish.sh read the latest release through the API; this reads the address the boxes read
+      - name: Read the address the boxes read
+        run: |
+          for try in 1 2 3 4 5; do
+            if curl -fsSL -o "${RUNNER_TEMP}/served.json" \
+              https://github.com/ReCasaOS/modules/releases/latest/download/catalogue-2.json &&
+              cmp -s "${RUNNER_TEMP}/served.json" out/catalogue-2.json; then
+              echo "The address the boxes read serves the catalogue published (SHA-256 $(sha256sum out/catalogue-2.json | cut -d' ' -f1))."
+              exit 0
+            fi
+            [[ "${try}" == 5 ]] || sleep 30
+          done
+          echo "The release is published, but the address the boxes read does not serve its catalogue-2.json: check it now."
+          exit 1

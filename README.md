@@ -66,10 +66,30 @@ pull request like any other.
 The check of a pull request runs the workflow and the scripts of that pull request itself.
 
 - A green check means something only when the pull request changes `modules.env` alone.
-- Any change to `refs.env`, `scripts/`, `tests/` or `.github/` is code that the publication
-  will run with write rights: review it as such.
+- Any change to `refs.env`, `scripts/`, `tests/` or `.github/` changes what is published to
+  every box, or how: review it as code. `scripts/publish.sh` and `.github/workflows/publish.yml`
+  run with the right to publish.
 - A new commit in `refs.env` must be on the `main` of its repository.
 - Read the summary of the run for removed modules: a merge removes them from every box.
+
+## Publication
+
+Each push on `main` runs `.github/workflows/publish.yml`. Its first job builds and checks the
+catalogue exactly as the check does, read only. Its second job runs `scripts/publish.sh`, which
+creates the release `c<serial>` as a draft, attaches `catalogue-2.json`, downloads it back and
+requires the same bytes, and only then publishes it as the latest release. A failure before that
+point leaves a draft, and the published catalogue unchanged. Two publications never run at once.
+
+The serial is the run number of the publication workflow, and it only goes up: `publish.sh`
+refuses a serial that is not above the one published.
+
+To see what is published: the latest release of this repository, or
+
+```
+curl -sSL https://github.com/ReCasaOS/modules/releases/latest/download/catalogue-2.json
+```
+
+The summary of each publication run shows what it changed and the SHA-256 of the file.
 
 ## The two tiers
 
@@ -83,5 +103,6 @@ On Linux, with bash, git, curl, Python 3.12 and Go, as a user that is not root:
 
 ```
 bash tests/test-build.sh                  # offline tests
+bash tests/test-publish.sh                # offline tests, with a fake gh
 bash scripts/build.sh 1 out/catalogue-2.json
 ```
