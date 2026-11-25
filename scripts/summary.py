@@ -4,7 +4,7 @@
     scripts/summary.py OLD_CATALOGUE NEW_CATALOGUE
 
 OLD_CATALOGUE is the catalogue published now; when that file does not exist, nothing is published yet. Each module is listed with its tag and tier before and after:
-added, removed, updated (tag or tier) or unchanged. A module removed is said plainly: a merge publishes that to every box. NEW is the catalogue that
+added, removed, updated (a higher tag), tier changed or unchanged. A module removed is said plainly: a merge publishes that to every box. NEW is the catalogue that
 scripts/build.sh built (and checked against OLD with scripts/compare.py).
 """
 import json
@@ -36,8 +36,10 @@ def main(old_path, new_path):
             change = "added"
         elif not after:
             change = "**removed**"
-        elif cell(before) != cell(after):
-            change = "updated"
+        elif before["tag"] != after["tag"]:
+            change = "updated"  # compare.py lets through only a higher tag
+        elif before["tier"] != after["tier"]:
+            change = "tier changed"
         else:
             change = "unchanged"
         lines.append("| %s | %s | %s | %s |" % (name, cell(before), cell(after), change))

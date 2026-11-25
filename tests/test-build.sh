@@ -25,7 +25,7 @@ commit_all() { # commit_all DIR MESSAGE: prints the new commit
 # --- the fake installer: the two scripts build.sh calls ---------------------
 inst="${T}/installer"
 mkdir -p "${inst}/scripts"
-git -C "${inst}" init -q
+git -C "${inst}" init -q -b main
 git -C "${inst}" config uploadpack.allowAnySHA1InWant true
 cat >"${inst}/scripts/stage-modules.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -72,11 +72,16 @@ else:
 EOF
 git -C "${inst}" update-index --add --chmod=+x scripts/stage-modules.sh 2>/dev/null || true
 INST_GOOD="$(commit_all "${inst}" "fake installer")"
+# main moves on far past the pinned commit (more than build.sh's first, shallow look at main)
+for i in $(seq 60); do git -C "${inst}" -c user.name=test -c user.email=test@invalid commit -q --allow-empty -m "later ${i}"; done
+# a commit that the repository serves only as a pull request's head, never merged into main
+INST_PR="$(git -C "${inst}" -c user.name=test -c user.email=test@invalid commit-tree "${INST_GOOD}^{tree}" -p "${INST_GOOD}" -m "outside pull request")"
+git -C "${inst}" update-ref refs/pull/7/head "${INST_PR}"
 
 # --- the fake core: reads the online catalogue as the real one does ----------
 core="${T}/core"
 mkdir -p "${core}"
-git -C "${core}" init -q
+git -C "${core}" init -q -b main
 git -C "${core}" config uploadpack.allowAnySHA1InWant true
 printf 'module fakecore\n\ngo 1.22\n' >"${core}/go.mod"
 cat >"${core}/main.go" <<'EOF'
@@ -127,6 +132,10 @@ EOF
 CORE_GOOD="$(commit_all "${core}" "fake core")"
 sed -i 's/var refuse = false/var refuse = true/' "${core}/main.go"
 CORE_REFUSES="$(commit_all "${core}" "fake core that refuses")"
+# the same core in a repository that has no main
+git clone -q --bare "${core}" "${T}/core-nomain"
+git -C "${T}/core-nomain" branch -m main other
+git -C "${T}/core-nomain" config uploadpack.allowAnySHA1InWant true
 
 # --- a copy of this repository with its own refs.env ------------------------
 repo="${T}/repo"
@@ -233,6 +242,19 @@ else
     fail "a tier change alone is in the summary"
 fi
 
+mutate 'm["virt"]["tag"] = "v0.2.7"'
+refused "a tag lower than the published one fails" "virt" "v0.2.6" "v0.2.7" "higher tag"
+mutate 'm["virt"]["tag"] = "v0.2.06"'
+refused "a tag equal to the published one but spelled otherwise fails" "virt" "v0.2.6" "v0.2.06"
+mutate 'm["mcp"]["tag"] = "v0.9.0"'
+cp "${published}" "${T}/old-v09.json"
+mutate 'm["mcp"]["tag"] = "v0.10.0"; m["mcp"]["assets"]["amd64"]["sha256"] = "2" * 64'
+if python3 "${ROOT}/scripts/compare.py" "${T}/old-v09.json" "${published}" >"${T}/log" 2>&1; then
+    pass "v0.10.0 after v0.9.0 passes (numbers, not text)"
+else
+    fail "v0.10.0 after v0.9.0 passes (numbers, not text)"; cat "${T}/log"
+fi
+
 printf '<!DOCTYPE html><html><body>Not Found</body></html>\n' >"${T}/published.json"
 refused "a published file that is HTML fails" "not a schema 2 catalogue"
 mutate 'c["schema"] = 1; del c["serial"], c["generated"]'
@@ -241,6 +263,26 @@ mutate 'pass'
 head -c 200 "${T}/built.json" >"${T}/published.json"
 refused "a truncated published file fails" "not a schema 2 catalogue"
 published=""
+
+# --- the pins must be in the history of main -------------------------------
+echo stale >"${out}"
+if run_build "${INST_GOOD}" "${CORE_GOOD}" 7 "${out}" && [[ -s "${out}" ]]; then
+    pass "a pinned commit far behind main passes"
+else
+    fail "a pinned commit far behind main passes"; cat "${T}/log"
+fi
+echo stale >"${out}"
+if ! run_build "${INST_PR}" "${CORE_GOOD}" 7 "${out}" && grep -q "INSTALLER_COMMIT ${INST_PR} is not in the history of main" "${T}/log" && [[ ! -e "${out}" ]]; then
+    pass "a pinned commit only on refs/pull/7/head fails, naming the pin"
+else
+    fail "a pinned commit only on refs/pull/7/head fails, naming the pin"; cat "${T}/log"
+fi
+echo stale >"${out}"
+if ! run_build "${INST_GOOD}" "${CORE_GOOD}" 7 "${out}" MODULES_TEST_CORE_DIR="${T}/core-nomain" && grep -q "main branch of the core" "${T}/log" && [[ ! -e "${out}" ]]; then
+    pass "a repository with no main fails"
+else
+    fail "a repository with no main fails"; cat "${T}/log"
+fi
 
 # an empty modules.env is refused before anything is fetched
 cp "${repo}/modules.env" "${T}/modules.env.keep"

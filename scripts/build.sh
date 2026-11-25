@@ -6,7 +6,8 @@
 #   scripts/build.sh SERIAL OUT [PUBLISHED]
 #
 # 1. fetches ReCasaOS/CasaOS-Install at INSTALLER_COMMIT and ReCasaOS/CasaOS at
-#    CORE_COMMIT (refs.env), each into a fresh folder, never by a branch name;
+#    CORE_COMMIT (refs.env), each into a fresh folder, never by a branch name,
+#    and requires each commit to be in the history of that repository's main;
 # 2. runs the installer's scripts/stage-modules.sh, which downloads each
 #    module's checksums.txt and archives and checks each sum;
 # 3. runs its scripts/build-modules-catalogue.py build --schema 2, which judges
@@ -79,18 +80,30 @@ fi
 work="$(mktemp -d)"
 trap 'rm -rf "${work}"' EXIT
 
-# fetch DIR URL COMMIT WHAT: a shallow fetch of exactly that commit
+# fetch DIR URL COMMIT WHAT PIN: a shallow fetch of exactly that commit, which must be in the history of
+# the repository's main. GitHub also serves the head of every pull request (and objects of forks) from
+# the same URL, so a commit that fetches is not yet a commit that the repository holds.
 fetch() {
-    local dir="$1" url="$2" commit="$3" what="$4"
+    local dir="$1" url="$2" commit="$3" what="$4" pin="$5" main=refs/remotes/pinned/main
     git init -q "${dir}" &&
         git -C "${dir}" fetch -q --depth 1 "${url}" "${commit}" &&
         git -C "${dir}" -c advice.detachedHead=false checkout -q FETCH_HEAD ||
         fail "The ${what} at ${commit} could not be fetched from ${url}."
     [[ "$(git -C "${dir}" rev-parse HEAD)" == "${commit}" ]] || fail "The ${what} fetched from ${url} is not at ${commit}."
+
+    # first the recent history of main, then all of it before saying no: a shallow history can only miss
+    # the commit, never find one that is not there
+    git -C "${dir}" fetch -q --depth 50 "${url}" "+refs/heads/main:${main}" ||
+        fail "The main branch of the ${what} could not be fetched from ${url} (there is none, or the fetch failed)."
+    git -C "${dir}" merge-base --is-ancestor "${commit}" "${main}" && return 0
+    git -C "${dir}" fetch -q --depth 2147483647 "${url}" "+refs/heads/main:${main}" ||
+        fail "The main branch of the ${what} could not be fetched from ${url} (there is none, or the fetch failed)."
+    git -C "${dir}" merge-base --is-ancestor "${commit}" "${main}" ||
+        fail "${pin} ${commit} is not in the history of main of ${url}: pin a commit that is merged there."
 }
 
-fetch "${work}/installer" "${installer_url}" "${installer_commit}" installer
-fetch "${work}/core" "${core_url}" "${core_commit}" core
+fetch "${work}/installer" "${installer_url}" "${installer_commit}" installer INSTALLER_COMMIT
+fetch "${work}/core" "${core_url}" "${core_commit}" core CORE_COMMIT
 installer="${work}/installer/scripts"
 
 env CHECKSUMS_BASE_URL="${GITHUB_BASE}" PYTHON="${PYTHON}" bash "${installer}/stage-modules.sh" "${ROOT}/modules.env" "${work}/stage" ||

@@ -5,7 +5,8 @@
 
 A release may not change under a tag that is already published: every box that read the published catalogue trusts those digests. So a module of NEW
 at the same tag as in PUBLISHED must have the same commit, the same archives (url and sha256 for each architecture) and the same manifest; only its tier
-may change (a decision recorded in modules.env). A new release needs a new tag.
+may change (a decision recorded in modules.env). A new release needs a new tag. And a module's tag never goes down, nor is written otherwise
+(v0.2.06 for v0.2.6): only a numerically higher tag passes, so a bad version is corrected by a higher one.
 
 PUBLISHED is data downloaded from the web: it is parsed strictly, and anything but a schema 2 catalogue is refused. Exit status: 0 fine, 1 refused (one
 sentence on the standard error), 2 usage. scripts/build.sh runs this when it is given PUBLISHED, before it writes anything.
@@ -16,6 +17,7 @@ import sys
 
 MAX_BYTES = 1 << 20  # the core's limit on a catalogue
 GENERATED_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+TAG_RE = re.compile(r"v([0-9]+)\.([0-9]+)\.([0-9]+)")
 
 
 class Refused(Exception):
@@ -65,6 +67,8 @@ def load(path):
                 and isinstance(e.get("manifest"), dict) and isinstance(e.get("assets"), dict)
                 and all(isinstance(a, dict) and isinstance(a.get("url"), str) and isinstance(a.get("sha256"), str) for a in e["assets"].values())):
             raise bad("modules.%d is not a module entry" % i)
+        if not TAG_RE.fullmatch(e["tag"]):
+            raise bad("module %s has the tag %s" % (e["name"], json.dumps(e["tag"])))
         if e["name"] in entries:
             raise bad("module %s is listed twice" % e["name"])
         entries[e["name"]] = e
@@ -74,7 +78,15 @@ def load(path):
 def compare(published, new):
     for name, n in sorted(new.items()):
         p = published.get(name)
-        if p is None or p["tag"] != n["tag"]:
+        if p is None:
+            continue
+        # compared as numbers: v0.10.0 is after v0.9.0, and v0.2.06 is v0.2.6
+        published_tag, new_tag = (tuple(map(int, TAG_RE.fullmatch(e["tag"]).groups())) for e in (p, n))
+        if new_tag < published_tag:
+            raise Refused("Module %s: the tag %s is lower than the published %s; the catalogue never goes back: a correction is a new, higher tag." % (name, n["tag"], p["tag"]))
+        if new_tag == published_tag and n["tag"] != p["tag"]:
+            raise Refused("Module %s: the tag %s is the published %s written otherwise; a correction is a new, higher tag." % (name, n["tag"], p["tag"]))
+        if new_tag > published_tag:
             continue
         rule = "a release may not change under a tag already published: give it a new tag."
         where = "Module %s, tag %s" % (name, n["tag"])

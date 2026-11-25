@@ -32,15 +32,16 @@ A new module is four new lines; removing a module is removing its four lines. Th
 the top of `modules.env` gives the exact format. A `modules.env` with no module is refused:
 a catalogue with no module is not published.
 
-A release may not change under a tag that is already published: a new release needs a new tag.
-Changing only the tier of a published version is allowed.
+A version already published cannot be republished or lowered: a correction is a new, higher
+tag. Changing only the tier of a published version is allowed.
 
 ## What the check does
 
 `.github/workflows/check.yml` runs on every pull request, read only. `scripts/build.sh`:
 
 1. fetches the installer (`ReCasaOS/CasaOS-Install`) and the core (`ReCasaOS/CasaOS`) at the
-   two commits of `refs.env`, never by a branch name;
+   two commits of `refs.env`, never by a branch name, and requires each commit to be in the
+   history of that repository's `main`;
 2. downloads each module's `checksums.txt` and archives and checks every archive against the
    SHA-256 its `checksums.txt` lists; a release that is gone, or whose archives do not match,
    fails here, with the module named;
@@ -48,16 +49,27 @@ Changing only the tier of a published version is allowed.
    against the commit, the module's `module.json` against its repository, and everything a box
    would refuse;
 4. checks the new catalogue against the published one (`scripts/compare.py`): a module at a
-   tag already published must keep the same commit, archives and manifest;
+   tag already published must keep the same commit, archives and manifest, and no tag may be
+   lower than the published one;
 5. builds the core and has it read the catalogue as a box does; it must take it and list
    every module at its pinned tag and tier.
 
 Any failure stops the check with one sentence saying which. The run's summary then shows what
-the change does to the published catalogue (each module added, removed or updated, with tag
-and tier before and after), and the SHA-256 of the file that was built.
+the change does to the published catalogue (each module added, removed, updated or with its
+tier changed, with tag and tier before and after), and the SHA-256 of the file that was built.
 
 `refs.env` pins the installer and the core used by the check. Changing either commit is a
 pull request like any other.
+
+## Reviewing a pull request
+
+The check of a pull request runs the workflow and the scripts of that pull request itself.
+
+- A green check means something only when the pull request changes `modules.env` alone.
+- Any change to `refs.env`, `scripts/`, `tests/` or `.github/` is code that the publication
+  will run with write rights: review it as such.
+- A new commit in `refs.env` must be on the `main` of its repository.
+- Read the summary of the run for removed modules: a merge removes them from every box.
 
 ## The two tiers
 
