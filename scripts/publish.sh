@@ -60,9 +60,10 @@ repo="${GITHUB_REPOSITORY:-}"
 work="$(mktemp -d)"
 trap 'rm -rf "${work}"' EXIT
 
-# serial_of FILE: the serial of a schema 2 catalogue, checked by compare.py's strict parser
+# serial_of FILE [SERIAL]: the serial of a schema 2 catalogue, checked by compare.py's strict parser. With SERIAL, the
+# status is 3 (the serial still printed) unless SERIAL is above it: compared in Python, as bash numbers wrap at 2^63.
 serial_of() {
-    python3 -I - "${ROOT}/scripts" "$1" <<'EOF'
+    python3 -I - "${ROOT}/scripts" "$@" <<'EOF'
 import json, sys
 sys.path.insert(0, sys.argv[1])
 import compare
@@ -70,7 +71,10 @@ try:
     compare.load(sys.argv[2])
 except compare.Refused as err:
     sys.exit(str(err))
-print(json.load(open(sys.argv[2], encoding="utf-8"))["serial"])
+serial = json.load(open(sys.argv[2], encoding="utf-8"))["serial"]
+print(serial)
+if len(sys.argv) > 3 and not int(sys.argv[3]) > serial:
+    sys.exit(3)
 EOF
 }
 
@@ -97,16 +101,18 @@ EOF
 )" || fail "The releases of ${repo} do not say which one is latest; nothing was written."
 read -r latest taken <<<"${state}"
 
-published=0
+# (nothing published: any serial passes, SERIAL is at least 1)
 if [[ "${latest}" != - ]]; then
     mkdir "${work}/published"
     "${GH}" release download "${latest}" -R "${repo}" --pattern "${ASSET}" --dir "${work}/published" ||
         fail "The ${ASSET} of the latest release ${latest} could not be downloaded; nothing was written."
-    published="$(serial_of "${work}/published/${ASSET}")" ||
+    status=0
+    published="$(serial_of "${work}/published/${ASSET}" "${serial}")" || status=$?
+    [[ "${status}" == 0 || "${status}" == 3 ]] ||
         fail "The ${ASSET} of the latest release ${latest} cannot be read (see above); nothing was written."
+    [[ "${status}" == 0 ]] ||
+        fail "The serial ${serial} is not above the published serial ${published} (${latest}): the catalogue never goes back; nothing was written."
 fi
-((serial > published)) ||
-    fail "The serial ${serial} is not above the published serial ${published} (${latest}): the catalogue never goes back; nothing was written."
 # a re-run of a run keeps its serial, and a second draft under one tag would make every call below ambiguous
 [[ "${taken}" == free ]] ||
     fail "A release c${serial} already exists (a draft left by an earlier attempt?): delete it, or run the workflow again for a new serial; nothing was written."

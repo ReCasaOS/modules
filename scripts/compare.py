@@ -16,6 +16,7 @@ import re
 import sys
 
 MAX_BYTES = 1 << 20  # the core's limit on a catalogue
+MAX_SERIAL = 1 << 63  # the builder's bound: a serial is a signed 64-bit integer
 GENERATED_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 TAG_RE = re.compile(r"v([0-9]+)\.([0-9]+)\.([0-9]+)")
 
@@ -55,8 +56,8 @@ def load(path):
         raise bad("not an object of schema, serial, generated and modules")
     if not is_int(c["schema"]) or c["schema"] != 2:
         raise bad("schema is %s" % json.dumps(c["schema"]))
-    if not is_int(c["serial"]) or c["serial"] < 1:
-        raise bad("serial is not a positive integer")
+    if not is_int(c["serial"]) or not 1 <= c["serial"] < MAX_SERIAL:
+        raise bad("serial is not a positive integer below 2^63")
     if not isinstance(c["generated"], str) or not GENERATED_RE.fullmatch(c["generated"]):
         raise bad("generated is not a UTC time")
     if not isinstance(c["modules"], list):

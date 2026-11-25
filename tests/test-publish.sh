@@ -253,6 +253,21 @@ else
     fail "MODULES_TEST_REPOSITORY allows another repository, and says so"; cat "${T}/log"
 fi
 
+# 12. a published serial at or above 2^63 is not a catalogue, and a huge one is still compared as a number
+reset 9223372036854775808
+catalogue "${new}" 5
+if ! run_publish 5 "${new}" && no_write && grep -q "not a schema 2 catalogue" "${T}/log" && [[ "$(latest)" == c9223372036854775808 ]]; then
+    pass "a published serial of 2^63 is refused, nothing written"
+else
+    fail "a published serial of 2^63 is refused, nothing written"; cat "${T}/log" "${T}/state/calls"
+fi
+reset 9223372036854775806
+if ! run_publish 5 "${new}" && no_write && grep -q "published serial 9223372036854775806" "${T}/log"; then
+    pass "serial 5 with 9223372036854775806 published is refused as not above, nothing written"
+else
+    fail "serial 5 with 9223372036854775806 published is refused as not above, nothing written"; cat "${T}/log" "${T}/state/calls"
+fi
+
 echo
 if [[ "${failures}" -eq 0 ]]; then
     echo "PASS"
