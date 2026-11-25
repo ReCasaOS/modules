@@ -1,0 +1,7 @@
+# The versions of modules that must no longer be offered, one line each:
+#
+#   <name> <tag> <reason>
+#
+# <name> and <tag> are those of the module and of the version, the reason is the
+# rest of the line: the text a person reads on a box. Blank lines and lines that
+# start with # are ignored. No version is withdrawn yet.
