@@ -52,6 +52,7 @@ jobs:
           bash tests/test-build.sh
           bash tests/test-publish.sh
           bash tests/test-published.sh
+          python3 tests/test-compare.py
 
       # The catalogue published now: "nothing published yet" only on a 404 while the repository has no
       # release at all (asked with this job's read token); any other failure fails the check.
@@ -59,11 +60,11 @@ jobs:
       - name: Download the published catalogue
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/published.sh "${RUNNER_TEMP}/published.json"
+        run: bash scripts/published.sh "${RUNNER_TEMP}/published"
 
       - name: Build the catalogue, check it against the published one, prove that the core reads it
         run: |
-          published="${RUNNER_TEMP}/published.json"
+          published="${RUNNER_TEMP}/published/catalogue-2.json"
           if [[ -f "${published}" ]]; then
             bash scripts/build.sh 1 out/catalogue-2.json "${published}"
           else
@@ -73,7 +74,7 @@ jobs:
       - name: Write the summary
         run: |
           {
-            python3 scripts/summary.py "${RUNNER_TEMP}/published.json" out/catalogue-2.json
+            python3 scripts/summary.py "${RUNNER_TEMP}/published" out
             echo
             echo "SHA-256 of the built catalogue-2.json: \`$(sha256sum out/catalogue-2.json | cut -d' ' -f1)\`"
           } >>"${GITHUB_STEP_SUMMARY}"

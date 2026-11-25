@@ -1,35 +1,61 @@
 #!/usr/bin/env python3
-"""Prints in Markdown what a change does to the published catalogue of the modules.
+"""Prints in Markdown what a change does to the published catalogues of the modules.
 
-    scripts/summary.py OLD_CATALOGUE NEW_CATALOGUE
+    scripts/summary.py PUBLISHED_DIR NEW_DIR
 
-OLD_CATALOGUE is the catalogue published now; when that file does not exist, nothing is published yet. Each module is listed with its tag and tier before and after:
-added, removed, updated (a higher tag), tier changed or unchanged. A module removed is said plainly: a merge publishes that to every box. NEW is the catalogue that
-scripts/build.sh built (and checked against OLD with scripts/compare.py).
+Each directory holds catalogue-2.json and, from the first publication of schema 3, catalogue-3.json. PUBLISHED_DIR is what scripts/published.sh wrote: when it holds
+no catalogue-2.json, nothing is published yet. Each module is listed with its tag and tier before and after: added, removed, updated (a higher tag), tier changed
+or unchanged; a module removed is said plainly, a merge publishes that to every box. The schema 3 file of a directory, when it has one, is the one read, as it
+holds the modules of other owners too. Below the table, each module added or updated says its repository, packages, unit and route, an update links to what
+changed in its repository, and a withdrawn version that is new is listed. NEW_DIR is what scripts/build.sh built (and checked against PUBLISHED_DIR with scripts/compare.py).
 """
 import json
 import os
 import sys
 
 
-def modules(path):
-    with open(path, encoding="utf-8") as f:
-        return {m["name"]: m for m in json.load(f)["modules"]}
+def read(directory):
+    """(the catalogue read in directory, whether it is schema 3): {} when there is none, which is nothing published."""
+    for name, is3 in (("catalogue-3.json", True), ("catalogue-2.json", False)):
+        path = os.path.join(directory, name)
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                return json.load(f), is3
+    return {}, False
 
 
 def cell(m):
     return "%s (%s)" % (m["tag"], m["tier"]) if m else "-"
 
 
-def main(old_path, new_path):
-    new = modules(new_path)
-    first = not os.path.exists(old_path)
-    old = {} if first else modules(old_path)
+def packages(manifest):
+    return "; ".join("%s: %s" % (arch, ", ".join(names)) for arch, names in manifest.get("packages", {}).items()) or "none"
+
+
+def details(old, new):
+    repository = new.get("repository") or "ReCasaOS/" + new["component"]
+    manifest = new["manifest"]
+    lines = ["- **%s %s**: repository %s, packages %s, unit %s, route %s" % (
+        new["name"], new["tag"], repository, packages(manifest), manifest.get("unit", "none"), manifest.get("gateway_route", "none"))]
+    if old:
+        lines.append("  - changes: https://github.com/%s/compare/%s...%s" % (repository, old["commit"], new["commit"]))
+    return lines
+
+
+def main(published_dir, new_dir):
+    (old_c, old3), (new_c, new3) = read(published_dir), read(new_dir)
+    old = {m["name"]: m for m in old_c.get("modules", [])}
+    new = {m["name"]: m for m in new_c.get("modules", [])}
 
     lines = ["## Modules catalogue", ""]
-    if first:
+    if not old_c:
         lines += ["No catalogue is published yet: this is the first publication.", ""]
+    elif not old3:
+        lines += ["The published release has no catalogue-3.json yet: this is the first publication of schema 3.", ""]
+    if not new3:
+        lines += ["No catalogue-3.json is built here: only the modules of ReCasaOS are listed.", ""]
     lines += ["| Module | Before | After | Change |", "| --- | --- | --- | --- |"]
+    news = []
     for name in sorted(old.keys() | new.keys()):
         before, after = old.get(name), new.get(name)
         if not before:
@@ -42,11 +68,19 @@ def main(old_path, new_path):
             change = "tier changed"
         else:
             change = "unchanged"
+        if change in ("added", "updated") and "manifest" in after:
+            news += details(before, after)
         lines.append("| %s | %s | %s | %s |" % (name, cell(before), cell(after), change))
+    if news:
+        lines += ["", "New versions:", ""] + news
+    seen = {(w["name"], w["tag"]) for w in old_c.get("withdrawn", [])}
+    withdrawn = ["- %s %s: %s" % (w["name"], w["tag"], w["reason"]) for w in new_c.get("withdrawn", []) if (w["name"], w["tag"]) not in seen]
+    if withdrawn:
+        lines += ["", "Newly withdrawn versions:", ""] + withdrawn
     print("\n".join(lines))
 
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
-        sys.exit("usage: scripts/summary.py OLD_CATALOGUE NEW_CATALOGUE")
+        sys.exit("usage: scripts/summary.py PUBLISHED_DIR NEW_DIR")
     main(sys.argv[1], sys.argv[2])

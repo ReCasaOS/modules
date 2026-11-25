@@ -247,7 +247,10 @@ mutate 'm["virt"]["tag"] = "v0.2.5"; m["virt"]["commit"] = "c" * 40; m["virt"]["
 accepted "a higher tag with new digests passes"
 mutate 'm["virt"]["tier"] = "community"'
 accepted "a tier change alone passes"
-if python3 "${ROOT}/scripts/summary.py" "${published}" "${out}" | grep "virt" | grep -q "community.*core"; then
+mkdir -p "${T}/sd-old" "${T}/sd-new"
+cp "${published}" "${T}/sd-old/catalogue-2.json"
+cp "${out}" "${T}/sd-new/catalogue-2.json"
+if python3 "${ROOT}/scripts/summary.py" "${T}/sd-old" "${T}/sd-new" | grep "virt" | grep -q "community.*core"; then
     pass "a tier change alone is in the summary"
 else
     fail "a tier change alone is in the summary"
@@ -308,8 +311,9 @@ fi
 cp "${T}/modules.env.keep" "${repo}/modules.env"
 
 # --- summary.py -------------------------------------------------------------
-cat_of() { # cat_of FILE SERIAL name:tag:tier...
-    local file="$1" serial="$2"
+cat_of() { # cat_of DIR SERIAL name:tag:tier...: DIR/catalogue-2.json
+    local file="$1/catalogue-2.json" serial="$2"
+    mkdir -p "$1"
     shift 2
     python3 - "${file}" "${serial}" "$@" <<'EOF'
 import json, sys
@@ -319,9 +323,9 @@ EOF
 }
 summary() { python3 "${ROOT}/scripts/summary.py" "$@" >"${T}/sum" 2>&1; }
 
-cat_of "${T}/old.json" 3 virt:v0.2.5:core mcp:v0.2.0:core
-cat_of "${T}/new.json" 4 virt:v0.2.6:core
-if summary "${T}/old.json" "${T}/new.json" && grep -q "v0.2.5" "${T}/sum" && grep -q "v0.2.6" "${T}/sum"; then
+cat_of "${T}/old" 3 virt:v0.2.5:core mcp:v0.2.0:core
+cat_of "${T}/new" 4 virt:v0.2.6:core
+if summary "${T}/old" "${T}/new" && grep -q "v0.2.5" "${T}/sum" && grep -q "v0.2.6" "${T}/sum"; then
     pass "summary: a tag that goes up shows before and after"
 else
     fail "summary: a tag that goes up shows before and after"; cat "${T}/sum"
@@ -332,7 +336,7 @@ else
     fail "summary: a removed module says removed"; cat "${T}/sum"
 fi
 
-if summary "${T}/missing.json" "${T}/new.json" && grep -q "first publication" "${T}/sum" && grep "virt" "${T}/sum" | grep -q "added"; then
+if summary "${T}/missing" "${T}/new" && grep -q "first publication" "${T}/sum" && grep "virt" "${T}/sum" | grep -q "added"; then
     pass "summary: no old catalogue is the first publication"
 else
     fail "summary: no old catalogue is the first publication"; cat "${T}/sum"

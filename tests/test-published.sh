@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Offline tests of scripts/published.sh. No network: CURL is a fake curl that
-# answers the HTTP status asked for, and GH a fake gh that answers the list of
-# releases asked for. Needs bash and python3.
+# answers the HTTP status asked for, and GH a fake gh that answers the latest
+# release and the list of releases asked for. Needs bash and python3.
 #
 #   bash tests/test-published.sh
 
@@ -16,25 +16,37 @@ pass() { echo "ok   - $1"; }
 fail() { echo "FAIL - $1"; failures=$((failures + 1)); }
 
 # FAKE_CURL_CODE: the status answered, its body written to -o (a 404 writes an HTML page, as GitHub does);
+# FAKE_CURL_CODE_FOR=FILE:CODE: another status for that file only;
 # FAKE_CURL_FAIL=1: writes part of a file, then fails as curl does on a cut connection
 cat >"${T}/curl" <<'EOF'
 #!/usr/bin/env python3
 import os, sys
 a = sys.argv[1:]
 out = a[a.index("-o") + 1]
-assert a[a.index("-w") + 1] == "%{http_code}" and a[-1].endswith("/releases/latest/download/catalogue-2.json"), a
+url = a[-1]
+assert a[a.index("-w") + 1] == "%{http_code}" and url.startswith("https://github.com/ReCasaOS/modules/releases/latest/download/catalogue-"), a
+file = url.rsplit("/", 1)[1]
 code = os.environ.get("FAKE_CURL_CODE", "200")
-open(out, "w").write('{"schema": 2}' if code == "200" else "<!DOCTYPE html><html>Not Found</html>")
+for rule in os.environ.get("FAKE_CURL_CODE_FOR", "").split():
+    if rule.split(":")[0] == file:
+        code = rule.split(":")[1]
+open(out, "w").write('{"file": "%s"}' % file if code == "200" else "<!DOCTYPE html><html>Not Found</html>")
 if os.environ.get("FAKE_CURL_FAIL"):
     sys.exit(56)
 print(code, end="")
 EOF
-# FAKE_GH_OUT: what `gh api` prints; FAKE_GH_FAIL=1: it fails
+# FAKE_GH_LATEST: the latest release as JSON; FAKE_GH_LATEST_ERR: it fails, saying that on the standard error;
+# FAKE_GH_OUT: what the list of releases prints; FAKE_GH_FAIL=1: the list fails
 cat >"${T}/gh" <<'EOF'
 #!/usr/bin/env python3
 import os, sys
 a = sys.argv[1:]
 open(os.environ["FAKE_GH_CALLS"], "a").write(" ".join(a) + "\n")
+if a == ["api", "repos/ReCasaOS/modules/releases/latest"]:
+    if os.environ.get("FAKE_GH_LATEST_ERR"):
+        sys.exit(os.environ["FAKE_GH_LATEST_ERR"])
+    print(os.environ["FAKE_GH_LATEST"])
+    sys.exit(0)
 assert a == ["api", "repos/ReCasaOS/modules/releases?per_page=1"], a
 if os.environ.get("FAKE_GH_FAIL"):
     sys.exit("fake gh: HTTP 502")
@@ -42,62 +54,103 @@ print(os.environ.get("FAKE_GH_OUT", "[]"))
 EOF
 chmod +x "${T}/curl" "${T}/gh"
 
-out="${T}/published.json"
-run() { # run [VAR=value...]: published.sh OUT, output in ${T}/log, gh calls in ${T}/calls; OUT starts stale
-    echo stale >"${out}"
+dir="${T}/published"
+release() { # release FILE...: the latest release, with these catalogue files and another file among its assets
+    python3 -c 'import json, sys; print(json.dumps({"tag_name": "c3", "assets": [{"name": n} for n in ["other.txt"] + sys.argv[1:]]}))' "$@"
+}
+both="$(release catalogue-2.json catalogue-3.json)"
+only2="$(release catalogue-2.json)"
+run() { # run [VAR=value...]: published.sh DIR, output in ${T}/log, gh calls in ${T}/calls; DIR starts with stale files
+    mkdir -p "${dir}"
+    echo stale >"${dir}/catalogue-2.json"
+    echo stale >"${dir}/catalogue-3.json"
     : >"${T}/calls"
     env CURL="${T}/curl" GH="${T}/gh" FAKE_GH_CALLS="${T}/calls" GITHUB_REPOSITORY=ReCasaOS/modules "$@" \
-        bash "${ROOT}/scripts/published.sh" "${out}" >"${T}/log" 2>&1
+        bash "${ROOT}/scripts/published.sh" "${dir}" >"${T}/log" 2>&1
 }
 one_line() { [[ "$(grep -c . "${T}/log")" == 1 ]]; }
+files() { (cd "${dir}" && ls | tr '\n' ' '); }
+empty() { [[ -d "${dir}" && -z "$(ls -A "${dir}")" ]]; }
 
-# 1. 200: the file is at OUT, and no release list is needed
-if run FAKE_CURL_CODE=200 && [[ "$(cat "${out}")" == '{"schema": 2}' ]] && [[ ! -s "${T}/calls" ]]; then
-    pass "200 writes the published file to OUT"
+# 1. a release with both files: both are written, read from the addresses the boxes read
+if run FAKE_GH_LATEST="${both}" && [[ "$(files)" == "catalogue-2.json catalogue-3.json " ]] &&
+    [[ "$(cat "${dir}/catalogue-2.json")" == '{"file": "catalogue-2.json"}' && "$(cat "${dir}/catalogue-3.json")" == '{"file": "catalogue-3.json"}' ]]; then
+    pass "a release with both files writes both"
 else
-    fail "200 writes the published file to OUT"; cat "${T}/log"
+    fail "a release with both files writes both"; cat "${T}/log"
 fi
 
-# 2. 404 and no release at all: nothing published yet, exit 0, no file
-if run FAKE_CURL_CODE=404 FAKE_GH_OUT='[]' && [[ ! -e "${out}" ]] && grep -q "nothing is published yet" "${T}/log"; then
-    pass "404 with no release: nothing published yet, exit 0, no file"
+# 2. a release without catalogue-3.json (c3, before schema 3): exit 0, one file; the list says so, no 404 is needed
+if run FAKE_GH_LATEST="${only2}" && [[ "$(files)" == "catalogue-2.json " ]] && [[ "$(cat "${dir}/catalogue-2.json")" == '{"file": "catalogue-2.json"}' ]]; then
+    pass "a release without catalogue-3.json writes catalogue-2.json only, exit 0"
 else
-    fail "404 with no release: nothing published yet, exit 0, no file"; cat "${T}/log"
+    fail "a release without catalogue-3.json writes catalogue-2.json only, exit 0"; cat "${T}/log"
 fi
 
-# 3. 404 while a release exists: refused, one sentence, no file
-if ! run FAKE_CURL_CODE=404 FAKE_GH_OUT='[{"tag_name": "c5", "draft": false}]' && [[ ! -e "${out}" ]] &&
-    one_line && grep -q "has a release" "${T}/log"; then
-    pass "404 while a release exists: refused in one sentence, no file"
+# 3. a file listed that does not download: refused, no file left
+if ! run FAKE_GH_LATEST="${both}" FAKE_CURL_CODE_FOR=catalogue-3.json:404 && empty && one_line && grep -q "catalogue-3.json answered HTTP 404" "${T}/log"; then
+    pass "a listed file that answers 404: refused in one sentence, no file"
 else
-    fail "404 while a release exists: refused in one sentence, no file"; cat "${T}/log"
+    fail "a listed file that answers 404: refused in one sentence, no file"; cat "${T}/log"; files
 fi
-
-# 4. another status, or a cut download: refused, no file
-for code in 500 403 301; do
-    if ! run FAKE_CURL_CODE="${code}" && [[ ! -e "${out}" ]] && one_line && grep -q "HTTP ${code}" "${T}/log"; then
-        pass "HTTP ${code}: refused, no file"
-    else
-        fail "HTTP ${code}: refused, no file"; cat "${T}/log"
-    fi
-done
-if ! run FAKE_CURL_FAIL=1 && [[ ! -e "${out}" ]] && one_line; then
+if ! run FAKE_GH_LATEST="${both}" FAKE_CURL_CODE_FOR=catalogue-2.json:500 && empty && one_line && grep -q "HTTP 500" "${T}/log"; then
+    pass "a listed file that answers 500: refused, no file"
+else
+    fail "a listed file that answers 500: refused, no file"; cat "${T}/log"; files
+fi
+if ! run FAKE_GH_LATEST="${both}" FAKE_CURL_FAIL=1 && empty && one_line; then
     pass "a curl failure: refused, no file"
 else
-    fail "a curl failure: refused, no file"; cat "${T}/log"
+    fail "a curl failure: refused, no file"; cat "${T}/log"; files
 fi
 
-# 5. the releases cannot be listed, or the answer is not a list: never read as "none"
-if ! run FAKE_CURL_CODE=404 FAKE_GH_FAIL=1 && [[ ! -e "${out}" ]] && grep -q "could not be listed" "${T}/log"; then
+# 4. no release at all: exit 0, the folder exists and is empty
+if run FAKE_GH_LATEST_ERR='gh: Not Found (HTTP 404)' FAKE_GH_OUT='[]' && empty && grep -q "nothing is published yet" "${T}/log"; then
+    pass "no release: nothing published yet, exit 0, an empty folder"
+else
+    fail "no release: nothing published yet, exit 0, an empty folder"; cat "${T}/log"; files
+fi
+if env CURL="${T}/curl" GH="${T}/gh" FAKE_GH_CALLS="${T}/calls" GITHUB_REPOSITORY=ReCasaOS/modules FAKE_GH_LATEST_ERR='HTTP 404' \
+    bash "${ROOT}/scripts/published.sh" "${T}/new/sub" >"${T}/log" 2>&1 && [[ -d "${T}/new/sub" && -z "$(ls -A "${T}/new/sub")" ]]; then
+    pass "the folder is created when it does not exist"
+else
+    fail "the folder is created when it does not exist"; cat "${T}/log"
+fi
+
+# 5. a 404 on the latest release while a release exists: refused
+if ! run FAKE_GH_LATEST_ERR='gh: Not Found (HTTP 404)' FAKE_GH_OUT='[{"tag_name": "c5", "draft": false}]' && empty && one_line && grep -q "has a release" "${T}/log"; then
+    pass "404 while a release exists: refused in one sentence, no file"
+else
+    fail "404 while a release exists: refused in one sentence, no file"; cat "${T}/log"; files
+fi
+
+# 6. the latest release has no catalogue-2.json, or does not list files: refused, never nothing published
+for latest in "$(release catalogue-3.json)" "$(release)" '{"tag_name": "c1"}' '[]' ''; do
+    if ! run FAKE_GH_LATEST="${latest}" && empty && one_line; then
+        pass "a latest release of '${latest:0:40}': refused, no file"
+    else
+        fail "a latest release of '${latest:0:40}': refused, no file"; cat "${T}/log"; files
+    fi
+done
+
+# 7. another failure of the latest release: refused, it is not a 404
+if ! run FAKE_GH_LATEST_ERR='fake gh: HTTP 502' && empty && one_line && [[ "$(grep -c 'per_page' "${T}/calls")" == 0 ]]; then
+    pass "HTTP 502 on the latest release: refused, never read as nothing published"
+else
+    fail "HTTP 502 on the latest release: refused, never read as nothing published"; cat "${T}/log"; files
+fi
+
+# 8. the releases cannot be listed, or the answer is not a list: never read as "none"
+if ! run FAKE_GH_LATEST_ERR='HTTP 404' FAKE_GH_FAIL=1 && empty && grep -q "could not be listed" "${T}/log"; then
     pass "gh failing on a 404: refused, no file"
 else
-    fail "gh failing on a 404: refused, no file"; cat "${T}/log"
+    fail "gh failing on a 404: refused, no file"; cat "${T}/log"; files
 fi
 for answer in '{"message": "Not Found"}' '' 'null' '<html>'; do
-    if ! run FAKE_CURL_CODE=404 FAKE_GH_OUT="${answer}" && [[ ! -e "${out}" ]] && one_line; then
+    if ! run FAKE_GH_LATEST_ERR='HTTP 404' FAKE_GH_OUT="${answer}" && empty && one_line; then
         pass "gh answering '${answer}' on a 404: refused, no file"
     else
-        fail "gh answering '${answer}' on a 404: refused, no file"; cat "${T}/log"
+        fail "gh answering '${answer}' on a 404: refused, no file"; cat "${T}/log"; files
     fi
 done
 
