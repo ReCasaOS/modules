@@ -3,7 +3,7 @@
 # Builds the online catalogue of the modules from modules.env, and proves that
 # the core reads it:
 #
-#   scripts/build.sh SERIAL OUT
+#   scripts/build.sh SERIAL OUT [PUBLISHED]
 #
 # 1. fetches ReCasaOS/CasaOS-Install at INSTALLER_COMMIT and ReCasaOS/CasaOS at
 #    CORE_COMMIT (refs.env), each into a fresh folder, never by a branch name;
@@ -14,6 +14,13 @@
 # 4. builds the core and runs its `casaos module list` on that file as the
 #    online catalogue, with no shipped one; build-modules-catalogue.py proof
 #    judges what it printed, and the core must say it read this file online.
+#
+# With PUBLISHED, the catalogue published now (downloaded by the caller), the
+# new one is also checked against it by scripts/compare.py: a module at a tag
+# already published must keep its commit, archives and manifest.
+#
+# modules.env must list at least one module: a catalogue with no module is not
+# published.
 #
 # OUT is written only when all of that holds. On any failure: a non-zero exit,
 # one sentence naming the check that failed, and no file at OUT.
@@ -37,9 +44,10 @@ fail() {
     exit 1
 }
 
-[[ $# -eq 2 ]] || { echo "usage: scripts/build.sh SERIAL OUT" >&2; exit 2; }
+[[ $# -eq 2 || $# -eq 3 ]] || { echo "usage: scripts/build.sh SERIAL OUT [PUBLISHED]" >&2; exit 2; }
 serial="$1"
 out="$2"
+published="${3:-}"
 rm -f "${out}"
 
 [[ "$(id -u)" != 0 ]] || fail "Refused to run as root: this runs the core it builds."
@@ -51,6 +59,11 @@ refs="$(cat "${ROOT}/refs.env")" || fail "refs.env cannot be read."
     fail "refs.env must be the two lines INSTALLER_COMMIT=<40 lower case hex> and CORE_COMMIT=<40 lower case hex>, and nothing else."
 installer_commit="${BASH_REMATCH[1]}"
 core_commit="${BASH_REMATCH[2]}"
+
+# (an early, plain refusal; the installer's builder stays the reader of the file)
+grep -Eq '^MODULE_[A-Z][A-Z0-9_]*_TAG=' "${ROOT}/modules.env" ||
+    fail "modules.env lists no module: a catalogue with no module is not published."
+[[ -z "${published}" || -f "${published}" ]] || fail "The published catalogue ${published} is not a file."
 
 installer_url="${GITHUB_BASE}/CasaOS-Install"
 core_url="${GITHUB_BASE}/CasaOS"
@@ -86,6 +99,11 @@ env CHECKSUMS_BASE_URL="${GITHUB_BASE}" PYTHON="${PYTHON}" bash "${installer}/st
 "${PYTHON}" "${installer}/build-modules-catalogue.py" build --git-base "${GITHUB_BASE}" --out "${work}/catalogue-2.json" \
     --schema 2 --serial "${serial}" --generated "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${ROOT}/modules.env" "${work}/stage" ||
     fail "The catalogue was not built: a module does not hold (see above)."
+
+if [[ -n "${published}" ]]; then
+    "${PYTHON}" "${ROOT}/scripts/compare.py" "${published}" "${work}/catalogue-2.json" ||
+        fail "The catalogue changes a module under a tag that is already published, or the published catalogue cannot be read (see above)."
+fi
 
 # --- the proof: the core at CORE_COMMIT reads the file as its online catalogue
 proof="${work}/proof"

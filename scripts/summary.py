@@ -4,7 +4,8 @@
     scripts/summary.py OLD_CATALOGUE NEW_CATALOGUE
 
 OLD_CATALOGUE is the catalogue published now; when that file does not exist, nothing is published yet. Each module is listed with its tag and tier before and after:
-added, removed, updated, changed at the same tag (another commit or other archives) or unchanged. A catalogue with no module, and a module removed, are said plainly: a merge publishes them to every box.
+added, removed, updated (tag or tier) or unchanged. A module removed is said plainly: a merge publishes that to every box. NEW is the catalogue that
+scripts/build.sh built (and checked against OLD with scripts/compare.py).
 """
 import json
 import os
@@ -28,8 +29,6 @@ def main(old_path, new_path):
     lines = ["## Modules catalogue", ""]
     if first:
         lines += ["No catalogue is published yet: this is the first publication.", ""]
-    if not new:
-        lines += ["**No module**: this catalogue lists no module. Once merged, no box can install any module.", ""]
     lines += ["| Module | Before | After | Change |", "| --- | --- | --- | --- |"]
     for name in sorted(old.keys() | new.keys()):
         before, after = old.get(name), new.get(name)
@@ -39,9 +38,6 @@ def main(old_path, new_path):
             change = "**removed**"
         elif cell(before) != cell(after):
             change = "updated"
-        elif before != after:
-            # same tag and tier, yet the entry differs: the release was replaced, or its commit re-pinned
-            change = "**changed at the same tag**: " + ", ".join(sorted(k for k in before.keys() | after.keys() if before.get(k) != after.get(k)))
         else:
             change = "unchanged"
         lines.append("| %s | %s | %s | %s |" % (name, cell(before), cell(after), change))

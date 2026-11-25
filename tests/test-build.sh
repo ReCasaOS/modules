@@ -39,20 +39,25 @@ mkdir -p "$2"
 EOF
 cat >"${inst}/scripts/build-modules-catalogue.py" <<'EOF'
 #!/usr/bin/env python3
-# fake: build writes a schema 2 catalogue of the names, tags and tiers of modules.env; proof reads the core's answer
-import json, re, sys
+# fake: build writes a schema 2 catalogue of modules.env, with made-up digests; proof reads the core's answer
+import hashlib, json, re, sys
 
 def modules(path):
     found = {}
     for line in open(path):
-        m = re.fullmatch(r"MODULE_([A-Z0-9_]+)_(TAG|TIER)=(\S+)\n?", line)
+        m = re.fullmatch(r"MODULE_([A-Z0-9_]+)_(TAG|COMMIT|COMPONENT|TIER)=(\S+)\n?", line)
         if m:
             found.setdefault(m[1].lower().replace("_", "-"), {})[m[2].lower()] = m[3]
     return [dict(name=n, **v) for n, v in sorted(found.items())]
 
+def entry(m):
+    url = "https://github.com/ReCasaOS/%s/releases/download/%s/linux-%%s-casaos-%s-%s.tar.gz" % (m["component"], m["tag"], m["name"], m["tag"])
+    assets = {arch: {"url": url % arch, "sha256": hashlib.sha256((m["name"] + m["tag"] + arch).encode()).hexdigest()} for arch in ("amd64", "arm64")}
+    return dict(m, assets=assets, manifest={"name": m["name"], "title": m["name"]})
+
 a = sys.argv[1:]
 if len(a) == 13 and a[0] == "build" and a[1] == "--git-base" and a[3] == "--out" and a[5:11:2] == ["--schema", "--serial", "--generated"]:
-    doc = {"schema": int(a[6]), "serial": int(a[8]), "generated": a[10], "modules": modules(a[11])}
+    doc = {"schema": int(a[6]), "serial": int(a[8]), "generated": a[10], "modules": [entry(m) for m in modules(a[11])]}
     open(a[4], "w").write(json.dumps(doc, indent=2) + "\n")
 elif len(a) == 3 and a[0] == "proof":
     out = json.load(open(a[2]))
@@ -126,15 +131,16 @@ CORE_REFUSES="$(commit_all "${core}" "fake core that refuses")"
 # --- a copy of this repository with its own refs.env ------------------------
 repo="${T}/repo"
 mkdir -p "${repo}/scripts"
-cp "${ROOT}/scripts/build.sh" "${repo}/scripts/" 2>/dev/null
+cp "${ROOT}/scripts/build.sh" "${ROOT}/scripts/compare.py" "${repo}/scripts/" 2>/dev/null
 cp "${ROOT}/modules.env" "${repo}/modules.env"
 
+published="" # when set, build.sh is given it as PUBLISHED
 run_build() { # run_build INSTALLER_COMMIT CORE_COMMIT SERIAL OUT [VAR=value...]: output in ${T}/log
     printf 'INSTALLER_COMMIT=%s\nCORE_COMMIT=%s\n' "$1" "$2" >"${repo}/refs.env"
     local serial="$3" out="$4"
     shift 4
     env MODULES_TEST_INSTALLER_DIR="${inst}" MODULES_TEST_CORE_DIR="${core}" "$@" \
-        bash "${repo}/scripts/build.sh" "${serial}" "${out}" >"${T}/log" 2>&1
+        bash "${repo}/scripts/build.sh" "${serial}" "${out}" ${published:+"${published}"} >"${T}/log" 2>&1
 }
 
 # 1. the happy path writes a schema 2 catalogue with the serial asked for
@@ -147,6 +153,7 @@ if run_build "${INST_GOOD}" "${CORE_GOOD}" 7 "${out}" &&
 else
     fail "the happy path writes a schema 2 catalogue with the serial asked for"; cat "${T}/log"
 fi
+cp "${out}" "${T}/built.json" 2>/dev/null
 
 # 2. an archive that no longer matches its sum: the failure names the module, nothing at OUT
 echo stale >"${out}"
@@ -186,6 +193,67 @@ else
     fail "a serial of 0 is refused"; cat "${T}/log"
 fi
 
+# --- against the published catalogue (PUBLISHED) ----------------------------
+mutate() { # mutate PYTHON: ${T}/published.json is built.json after PYTHON ran on c, its modules by name in m
+    published="${T}/published.json"
+    python3 - "${T}/built.json" "${published}" "$1" <<'EOF'
+import json, sys
+c = json.load(open(sys.argv[1]))
+m = {e["name"]: e for e in c["modules"]}
+exec(sys.argv[3])
+json.dump(c, open(sys.argv[2], "w"))
+EOF
+}
+refused() { # refused NAME PATTERN...: build.sh with ${published} fails, says each pattern, leaves no OUT
+    local name="$1" p ok=1
+    shift
+    echo stale >"${out}"
+    run_build "${INST_GOOD}" "${CORE_GOOD}" 8 "${out}" && ok=0
+    for p in "$@"; do grep -q -- "${p}" "${T}/log" || ok=0; done
+    [[ ! -e "${out}" ]] || ok=0
+    if [[ "${ok}" == 1 ]]; then pass "${name}"; else fail "${name}"; cat "${T}/log"; fi
+}
+accepted() { # accepted NAME: build.sh with ${published} passes
+    if run_build "${INST_GOOD}" "${CORE_GOOD}" 8 "${out}" && [[ -s "${out}" ]]; then pass "$1"; else fail "$1"; cat "${T}/log"; fi
+}
+
+mutate 'm["virt"]["assets"]["amd64"]["sha256"] = "0" * 64'
+refused "same tag and commit, another amd64 sha256: fails naming the module" "virt" "amd64" "new tag"
+mutate 'm["mcp"]["assets"]["arm64"]["url"] += ".old"'
+refused "same tag and commit, another url: fails" "mcp" "arm64" "new tag"
+mutate 'm["vuln-scan"]["manifest"]["title"] = "Old title"'
+refused "same tag and commit, another manifest: fails" "vuln-scan" "manifest" "new tag"
+mutate 'm["virt"]["tag"] = "v0.2.5"; m["virt"]["commit"] = "c" * 40; m["virt"]["assets"]["amd64"]["sha256"] = "1" * 64'
+accepted "a higher tag with new digests passes"
+mutate 'm["virt"]["tier"] = "community"'
+accepted "a tier change alone passes"
+if python3 "${ROOT}/scripts/summary.py" "${published}" "${out}" | grep "virt" | grep -q "community.*core"; then
+    pass "a tier change alone is in the summary"
+else
+    fail "a tier change alone is in the summary"
+fi
+
+printf '<!DOCTYPE html><html><body>Not Found</body></html>\n' >"${T}/published.json"
+refused "a published file that is HTML fails" "not a schema 2 catalogue"
+mutate 'c["schema"] = 1; del c["serial"], c["generated"]'
+refused "a published file of schema 1 fails" "not a schema 2 catalogue"
+mutate 'pass'
+head -c 200 "${T}/built.json" >"${T}/published.json"
+refused "a truncated published file fails" "not a schema 2 catalogue"
+published=""
+
+# an empty modules.env is refused before anything is fetched
+cp "${repo}/modules.env" "${T}/modules.env.keep"
+grep '^#' "${T}/modules.env.keep" >"${repo}/modules.env"
+echo stale >"${out}"
+if ! run_build "${INST_GOOD}" "${CORE_GOOD}" 7 "${out}" MODULES_TEST_INSTALLER_DIR="${T}/nowhere" &&
+    grep -q "modules.env lists no module" "${T}/log" && ! grep -q "could not be fetched" "${T}/log" && [[ ! -e "${out}" ]]; then
+    pass "an empty modules.env is refused before any fetch"
+else
+    fail "an empty modules.env is refused before any fetch"; cat "${T}/log"
+fi
+cp "${T}/modules.env.keep" "${repo}/modules.env"
+
 # --- summary.py -------------------------------------------------------------
 cat_of() { # cat_of FILE SERIAL name:tag:tier...
     local file="$1" serial="$2"
@@ -209,20 +277,6 @@ if grep "mcp" "${T}/sum" | grep -q "removed"; then
     pass "summary: a removed module says removed"
 else
     fail "summary: a removed module says removed"; cat "${T}/sum"
-fi
-
-python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); c["modules"][0]["commit"]="b"*40; json.dump(c, open(sys.argv[2], "w"))' "${T}/new.json" "${T}/repinned.json"
-if summary "${T}/new.json" "${T}/repinned.json" && grep "virt" "${T}/sum" | grep -q "changed at the same tag.*commit"; then
-    pass "summary: another commit at the same tag is said"
-else
-    fail "summary: another commit at the same tag is said"; cat "${T}/sum"
-fi
-
-cat_of "${T}/empty.json" 5
-if summary "${T}/old.json" "${T}/empty.json" && grep -q "No module" "${T}/sum"; then
-    pass "summary: an empty list says no module"
-else
-    fail "summary: an empty list says no module"; cat "${T}/sum"
 fi
 
 if summary "${T}/missing.json" "${T}/new.json" && grep -q "first publication" "${T}/sum" && grep "virt" "${T}/sum" | grep -q "added"; then

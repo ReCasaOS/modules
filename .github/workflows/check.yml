@@ -1,5 +1,6 @@
 # The check of a proposed change: builds the catalogue from the change's modules.env with
-# the installer and the core pinned in refs.env, proves that the core reads it, and writes
+# the installer and the core pinned in refs.env, checks it against the published catalogue
+# (no release may change under a published tag), proves that the core reads it, and writes
 # what the change does to the published catalogue into the run's summary.
 #
 # Read only, and never pull_request_target: a pull request from a fork runs here with no
@@ -49,22 +50,33 @@ jobs:
       - name: Test the scripts
         run: bash tests/test-build.sh
 
-      - name: Build the catalogue and prove that the core reads it
-        run: bash scripts/build.sh 1 out/catalogue-2.json
-
-      - name: Write the summary
+      # The catalogue published now: 404 is "nothing published yet"; any other failure fails the check.
+      # It is data: compare.py (run by build.sh) parses it strictly, nothing runs it.
+      - name: Download the published catalogue
         run: |
           published="${RUNNER_TEMP}/published.json"
           code="$(curl -sSL --retry 5 --retry-delay 10 -o "${published}" -w '%{http_code}' \
             https://github.com/ReCasaOS/modules/releases/latest/download/catalogue-2.json)" ||
-            { echo "The published catalogue could not be fetched."; exit 1; }
+            { echo "The published catalogue could not be downloaded."; exit 1; }
           case "${code}" in
           200) ;;
           404) rm -f "${published}" ;; # nothing published yet
           *) echo "The published catalogue answered HTTP ${code}."; exit 1 ;;
           esac
+
+      - name: Build the catalogue, check it against the published one, prove that the core reads it
+        run: |
+          published="${RUNNER_TEMP}/published.json"
+          if [[ -f "${published}" ]]; then
+            bash scripts/build.sh 1 out/catalogue-2.json "${published}"
+          else
+            bash scripts/build.sh 1 out/catalogue-2.json
+          fi
+
+      - name: Write the summary
+        run: |
           {
-            python3 scripts/summary.py "${published}" out/catalogue-2.json
+            python3 scripts/summary.py "${RUNNER_TEMP}/published.json" out/catalogue-2.json
             echo
             echo "SHA-256 of the built catalogue-2.json: \`$(sha256sum out/catalogue-2.json | cut -d' ' -f1)\`"
           } >>"${GITHUB_STEP_SUMMARY}"
