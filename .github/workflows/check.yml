@@ -1,0 +1,70 @@
+# The check of a proposed change: builds the catalogue from the change's modules.env with
+# the installer and the core pinned in refs.env, proves that the core reads it, and writes
+# what the change does to the published catalogue into the run's summary.
+#
+# Read only, and never pull_request_target: a pull request from a fork runs here with no
+# write right and no secret. The built file is not uploaded as an artifact (the installer
+# pins no upload-artifact action); its SHA-256 is in the summary.
+name: Check
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # 3.12: the Unicode tables of the Go that builds the core (see build-modules-catalogue.py)
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      # setup-go needs the Go version before build.sh fetches the core: take the go.mod of the pinned commit
+      - name: Read the go.mod of the pinned core
+        run: |
+          core_commit="$(sed -n 's/^CORE_COMMIT=\([0-9a-f]\{40\}\)$/\1/p' refs.env)"
+          [[ "${core_commit}" =~ ^[0-9a-f]{40}$ ]] || { echo "refs.env has no valid CORE_COMMIT."; exit 1; }
+          git init -q "${RUNNER_TEMP}/core-gomod"
+          git -C "${RUNNER_TEMP}/core-gomod" fetch -q --depth 1 https://github.com/ReCasaOS/CasaOS "${core_commit}"
+          git -C "${RUNNER_TEMP}/core-gomod" show FETCH_HEAD:go.mod >"${RUNNER_TEMP}/core-gomod/go.mod"
+
+      # (setup-go parses the go line only of a file named go.mod)
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: ${{ runner.temp }}/core-gomod/go.mod
+          cache: false
+
+      - name: Test the scripts
+        run: bash tests/test-build.sh
+
+      - name: Build the catalogue and prove that the core reads it
+        run: bash scripts/build.sh 1 out/catalogue-2.json
+
+      - name: Write the summary
+        run: |
+          published="${RUNNER_TEMP}/published.json"
+          code="$(curl -sSL --retry 5 --retry-delay 10 -o "${published}" -w '%{http_code}' \
+            https://github.com/ReCasaOS/modules/releases/latest/download/catalogue-2.json)" ||
+            { echo "The published catalogue could not be fetched."; exit 1; }
+          case "${code}" in
+          200) ;;
+          404) rm -f "${published}" ;; # nothing published yet
+          *) echo "The published catalogue answered HTTP ${code}."; exit 1 ;;
+          esac
+          {
+            python3 scripts/summary.py "${published}" out/catalogue-2.json
+            echo
+            echo "SHA-256 of the built catalogue-2.json: \`$(sha256sum out/catalogue-2.json | cut -d' ' -f1)\`"
+          } >>"${GITHUB_STEP_SUMMARY}"
