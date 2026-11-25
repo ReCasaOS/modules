@@ -317,7 +317,8 @@ cat_of() { # cat_of DIR SERIAL name:tag:tier...: DIR/catalogue-2.json
     shift 2
     python3 - "${file}" "${serial}" "$@" <<'EOF'
 import json, sys
-mods = [dict(zip(("name", "tag", "tier"), m.split(":"))) for m in sys.argv[3:]]
+mods = [dict(zip(("name", "tag", "tier"), m.split(":")), component="c", commit="a" * 40, manifest={},
+             assets={a: {"url": "https://example.invalid/x", "sha256": "b" * 64} for a in ("amd64", "arm64")}) for m in sys.argv[3:]]
 json.dump({"schema": 2, "serial": int(sys.argv[2]), "generated": "2026-11-25T12:00:00Z", "modules": mods}, open(sys.argv[1], "w"))
 EOF
 }

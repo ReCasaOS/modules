@@ -15,6 +15,7 @@ sentence on the standard error), 2 usage. scripts/build.sh runs this when it is 
 import json
 import re
 import sys
+import unicodedata
 
 MAX_BYTES = 1 << 20  # the core's limit on a catalogue
 MAX_SERIAL = 1 << 63  # the builder's bound: a serial is a signed 64-bit integer
@@ -23,6 +24,11 @@ TAG_RE = re.compile(r"v([0-9]+)\.([0-9]+)\.([0-9]+)")
 OWNER = "ReCasaOS"
 OWNER_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?")
 MIRROR_URL = "https://github.com/ReCasaOS/modules/releases/download/"
+NAME_RE = re.compile(r"[a-z][a-z0-9-]{0,31}")
+COMMIT_RE = re.compile(r"[0-9a-f]{40}")
+SHA256_RE = re.compile(r"[0-9a-f]{64}")
+ARCHIVE_RE = re.compile(r"linux-(amd64|arm64)-casaos-[a-z-]+-(v[0-9.]+)\.tar\.gz")  # the builder's
+BLANKS = "⠀ᅟᅠㅤﾠ"
 MAX_WITHDRAWN = 64
 MAX_REASON = 200
 
@@ -77,8 +83,14 @@ def read(path, schema=2):
                 and isinstance(e.get("manifest"), dict) and isinstance(e.get("assets"), dict)
                 and all(isinstance(a, dict) and isinstance(a.get("url"), str) and isinstance(a.get("sha256"), str) for a in e["assets"].values())):
             raise bad("modules.%d is not a module entry" % i)
+        if not NAME_RE.fullmatch(e["name"]):
+            raise bad("modules.%d has the name %s" % (i, json.dumps(e["name"])))
         if not TAG_RE.fullmatch(e["tag"]):
             raise bad("module %s has the tag %s" % (e["name"], json.dumps(e["tag"])))
+        if not COMMIT_RE.fullmatch(e["commit"]):
+            raise bad("module %s has the commit %s" % (e["name"], json.dumps(e["commit"])))
+        if set(e["assets"]) != {"amd64", "arm64"} or not all(SHA256_RE.fullmatch(a["sha256"]) for a in e["assets"].values()):
+            raise bad("module %s has archives that are not an amd64 and an arm64 one with a SHA-256 each" % e["name"])
         if e["name"] in names:
             raise bad("module %s is listed twice" % e["name"])
         names.add(e["name"])
@@ -94,8 +106,11 @@ def check_withdrawn(items, bad):
     for i, w in enumerate(items):
         if not (isinstance(w, dict) and set(w) == {"name", "tag", "reason"} and all(isinstance(v, str) for v in w.values())):
             raise bad("withdrawn.%d is not a name, a tag and a reason" % i)
-        if not TAG_RE.fullmatch(w["tag"]) or not 1 <= len(w["reason"]) <= MAX_REASON:
-            raise bad("withdrawn.%d has a tag that is none, or a reason of another length than 1 to %d characters" % (i, MAX_REASON))
+        if not NAME_RE.fullmatch(w["name"]) or not TAG_RE.fullmatch(w["tag"]) or not 1 <= len(w["reason"]) <= MAX_REASON:
+            raise bad("withdrawn.%d has a name or a tag that is none, or a reason of another length than 1 to %d characters" % (i, MAX_REASON))
+        r = w["reason"]
+        if not all((unicodedata.category(c)[0] in "LMNPS" or c == " ") and c != "�" for c in r)                 or not any(unicodedata.category(c)[0] in "LNPS" and c not in BLANKS for c in r) or "@" in r or "<!" in r:
+            raise bad("withdrawn.%d has a reason that is not text a person sees, or holds an @ or a <!" % i)
         if (w["name"], w["tag"]) in seen:
             raise bad("withdrawn.%d withdraws %s %s twice" % (i, w["name"], w["tag"]))
         seen.add((w["name"], w["tag"]))
@@ -110,7 +125,8 @@ def check_entry3(e, bad):
     prefix = "%sm-%s-%s/" % (MIRROR_URL, e["name"], e["tag"])
     for arch, a in e["assets"].items():
         file = a["url"][len(prefix):]
-        if not a["url"].startswith(prefix) or not file or "/" in file:
+        m = ARCHIVE_RE.fullmatch(file)
+        if not a["url"].startswith(prefix) or not m or m.group(1) != arch or m.group(2) != e["tag"]:
             raise bad("module %s, %s: the archive is not at %s" % (e["name"], arch, prefix))
 
 

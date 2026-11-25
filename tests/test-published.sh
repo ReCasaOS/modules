@@ -24,13 +24,18 @@ import os, sys
 a = sys.argv[1:]
 out = a[a.index("-o") + 1]
 url = a[-1]
-assert a[a.index("-w") + 1] == "%{http_code}" and url.startswith("https://github.com/ReCasaOS/modules/releases/latest/download/catalogue-"), a
+assert a[a.index("-w") + 1] == "%{http_code}" and a[a.index("--max-filesize") + 1] == "1048576", a
+assert url.startswith("https://github.com/ReCasaOS/modules/releases/download/c3/catalogue-"), a
 file = url.rsplit("/", 1)[1]
 code = os.environ.get("FAKE_CURL_CODE", "200")
 for rule in os.environ.get("FAKE_CURL_CODE_FOR", "").split():
     if rule.split(":")[0] == file:
         code = rule.split(":")[1]
-open(out, "w").write('{"file": "%s"}' % file if code == "200" else "<!DOCTYPE html><html>Not Found</html>")
+schema = 3 if file == "catalogue-3.json" else 2
+serial = os.environ.get("FAKE_SERIAL_3", "7") if schema == 3 else "7"
+body = '{"schema": %d, "serial": %s, "generated": "2026-11-25T12:00:00Z", %s"modules": []}' % (schema, serial, '"withdrawn": [], ' if schema == 3 else "")
+open(os.environ["FAKE_GH_CALLS"] + ".curl", "a").write(url + "\n")
+open(out, "w").write(body if code == "200" else "<!DOCTYPE html><html>Not Found</html>")
 if os.environ.get("FAKE_CURL_FAIL"):
     sys.exit(56)
 print(code, end="")
@@ -65,6 +70,7 @@ run() { # run [VAR=value...]: published.sh DIR, output in ${T}/log, gh calls in 
     echo stale >"${dir}/catalogue-2.json"
     echo stale >"${dir}/catalogue-3.json"
     : >"${T}/calls"
+    : >"${T}/calls.curl"
     env CURL="${T}/curl" GH="${T}/gh" FAKE_GH_CALLS="${T}/calls" GITHUB_REPOSITORY=ReCasaOS/modules "$@" \
         bash "${ROOT}/scripts/published.sh" "${dir}" >"${T}/log" 2>&1
 }
@@ -74,14 +80,14 @@ empty() { [[ -d "${dir}" && -z "$(ls -A "${dir}")" ]]; }
 
 # 1. a release with both files: both are written, read from the addresses the boxes read
 if run FAKE_GH_LATEST="${both}" && [[ "$(files)" == "catalogue-2.json catalogue-3.json " ]] &&
-    [[ "$(cat "${dir}/catalogue-2.json")" == '{"file": "catalogue-2.json"}' && "$(cat "${dir}/catalogue-3.json")" == '{"file": "catalogue-3.json"}' ]]; then
+    grep -q '"schema": 2' "${dir}/catalogue-2.json" && grep -q '"schema": 3' "${dir}/catalogue-3.json" && grep -q "releases/download/c3/catalogue-3.json" "${T}/calls.curl"; then
     pass "a release with both files writes both"
 else
     fail "a release with both files writes both"; cat "${T}/log"
 fi
 
 # 2. a release without catalogue-3.json (c3, before schema 3): exit 0, one file; the list says so, no 404 is needed
-if run FAKE_GH_LATEST="${only2}" && [[ "$(files)" == "catalogue-2.json " ]] && [[ "$(cat "${dir}/catalogue-2.json")" == '{"file": "catalogue-2.json"}' ]]; then
+if run FAKE_GH_LATEST="${only2}" && [[ "$(files)" == "catalogue-2.json " ]] && grep -q '"schema": 2' "${dir}/catalogue-2.json"; then
     pass "a release without catalogue-3.json writes catalogue-2.json only, exit 0"
 else
     fail "a release without catalogue-3.json writes catalogue-2.json only, exit 0"; cat "${T}/log"
@@ -103,6 +109,27 @@ if ! run FAKE_GH_LATEST="${both}" FAKE_CURL_FAIL=1 && empty && one_line; then
 else
     fail "a curl failure: refused, no file"; cat "${T}/log"; files
 fi
+
+# 3b. one release is read as a whole: two files of two publications, a tag that is no c<serial>, a repository that is none
+if ! run FAKE_GH_LATEST="${both}" FAKE_SERIAL_3=8 && empty && one_line && grep -q "same serial" "${T}/log"; then
+    pass "two files of another serial: refused, no file"
+else
+    fail "two files of another serial: refused, no file"; cat "${T}/log"; files
+fi
+for tag in 'x' 'c0' 'c03' 'c3/../x' ''; do
+    if ! run FAKE_GH_LATEST="$(python3 -c 'import json, sys; print(json.dumps({"tag_name": sys.argv[1], "assets": [{"name": "catalogue-2.json"}]}))' "${tag}")" && empty && one_line && [[ ! -s "${T}/calls.curl" ]]; then
+        pass "the tag '${tag}': refused before any download"
+    else
+        fail "the tag '${tag}': refused before any download"; cat "${T}/log"; files
+    fi
+done
+for badrepo in '' 'ReCasaOS' 'a/b/c' 'ReCasaOS/modules;x' '../x'; do
+    if ! run GITHUB_REPOSITORY="${badrepo}" FAKE_GH_LATEST="${both}" && one_line && [[ ! -s "${T}/calls" ]]; then
+        pass "the repository '${badrepo}': refused before any call"
+    else
+        fail "the repository '${badrepo}': refused before any call"; cat "${T}/log"
+    fi
+done
 
 # 4. no release at all: exit 0, the folder exists and is empty
 if run FAKE_GH_LATEST_ERR='gh: Not Found (HTTP 404)' FAKE_GH_OUT='[]' && empty && grep -q "nothing is published yet" "${T}/log"; then
@@ -132,6 +159,13 @@ for latest in "$(release catalogue-3.json)" "$(release)" '{"tag_name": "c1"}' '[
         fail "a latest release of '${latest:0:40}': refused, no file"; cat "${T}/log"; files
     fi
 done
+
+# 6b. gh saying 404 in other words is not a 404 of the API
+if ! run FAKE_GH_LATEST_ERR='error 404 somewhere' FAKE_GH_OUT='[]' && empty && one_line && [[ "$(grep -c 'per_page' "${T}/calls")" == 0 ]]; then
+    pass "a failure that does not say HTTP 404: refused, never nothing published"
+else
+    fail "a failure that does not say HTTP 404: refused, never nothing published"; cat "${T}/log"; files
+fi
 
 # 7. another failure of the latest release: refused, it is not a 404
 if ! run FAKE_GH_LATEST_ERR='fake gh: HTTP 502' && empty && one_line && [[ "$(grep -c 'per_page' "${T}/calls")" == 0 ]]; then

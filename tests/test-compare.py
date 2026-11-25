@@ -6,6 +6,7 @@
 import copy
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -108,6 +109,19 @@ m["withdrawn"] = []
 check("withdrawn in a schema 2 file is refused", *refused(m, 2, "not a schema 2 catalogue"))
 
 for label, mutate, words in (
+    ("a commit that is not 40 lower case hex", lambda c: c["modules"][0].update(commit="A" * 40), ("commit",)),
+    ("a sha256 that is not 64 lower case hex", lambda c: c["modules"][0]["assets"]["amd64"].update(sha256="B" * 64), ("SHA-256",)),
+    ("an architecture that is none of the two", lambda c: c["modules"][0]["assets"].update(riscv=c["modules"][0]["assets"]["amd64"]), ("amd64 and an arm64",)),
+    ("only one architecture", lambda c: c["modules"][0]["assets"].pop("arm64"), ("amd64 and an arm64",)),
+    ("a name that is not the name of a module", lambda c: c["modules"][1].update(name="Hello"), ("name",)),
+    ("a withdrawn name that is not the name of a module", lambda c: c["withdrawn"][0].update(name="A b"), ("withdrawn.0",)),
+    ("an archive file of another architecture", lambda c: c["modules"][0]["assets"]["amd64"].update(url=MIRROR + "m-virt-v0.2.6/linux-arm64-casaos-virt-v0.2.6.tar.gz"), ("archive",)),
+    ("an archive file of another tag", lambda c: c["modules"][0]["assets"]["amd64"].update(url=MIRROR + "m-virt-v0.2.6/linux-amd64-casaos-virt-v0.2.5.tar.gz"), ("archive",)),
+    ("an archive file that is no archive name", lambda c: c["modules"][0]["assets"]["amd64"].update(url=MIRROR + "m-virt-v0.2.6/evil.sh"), ("archive",)),
+    ("a reason with an @", lambda c: c["withdrawn"][0].update(reason="Thanks @someone"), ("withdrawn.0", "@")),
+    ("a reason with a <!", lambda c: c["withdrawn"][0].update(reason="a <!-- b"), ("withdrawn.0",)),
+    ("a reason with a line feed", lambda c: c["withdrawn"][0].update(reason="a\nb"), ("withdrawn.0",)),
+    ("a reason of blanks", lambda c: c["withdrawn"][0].update(reason="⠀⠀"), ("withdrawn.0",)),
     ("a withdrawn version that is not a list", lambda c: c.update(withdrawn={}), ("withdrawn",)),
     ("a withdrawn version with another key", lambda c: c["withdrawn"][0].update(why="x"), ("withdrawn.0",)),
     ("a withdrawn version with no reason", lambda c: c["withdrawn"][0].update(reason=""), ("withdrawn.0",)),
@@ -136,6 +150,16 @@ check("64 withdrawn versions pass", *accepted(m, 3))
 m = copy.deepcopy(good3)
 m["withdrawn"][0]["reason"] = "x" * 200
 check("a withdrawn reason of 200 characters passes", *accepted(m, 3))
+
+for label, mutate in (
+    ("a commit that is not hex", lambda c: c["modules"][0].update(commit="z" * 40)),
+    ("one architecture only", lambda c: c["modules"][0]["assets"].pop("arm64")),
+    ("a sha256 of capitals", lambda c: c["modules"][0]["assets"]["amd64"].update(sha256="B" * 64)),
+    ("a name that is none", lambda c: c["modules"][0].update(name="Virt!")),
+):
+    m = copy.deepcopy(good2)
+    mutate(m)
+    check("refused in schema 2: " + label, *refused(m, 2, "not a schema 2 catalogue"))
 
 # --- compare ---------------------------------------------------------------------------
 def run_compare(published, new, *extra):
@@ -191,12 +215,12 @@ new3 = catalogue([entry("virt", "v0.2.6", commit="2" * 40), entry("hello", "v0.1
                  withdrawn=[("virt", "v0.2.0", "Old."), ("virt", "v0.2.5", "The upgrade failed.")])
 code, out = summary({"catalogue-2.json": old2, "catalogue-3.json": old3}, {"catalogue-2.json": old2, "catalogue-3.json": new3})
 check("summary: a new module of another owner shows its repository, packages, unit and route",
-      code == 0 and "| hello | - | v0.1.0 (community) | added |" in out and "repository someone/hello-module" in out
-      and "common: qemu-utils, ovmf; arm64: qemu-efi-aarch64" in out and "unit casaos-hello.service" in out and "route /v2/hello" in out, out)
+      code == 0 and "| hello | - | v0.1.0 (community) | added |" in out and r"repository someone\/hello\-module" in out
+      and r"common: qemu\-utils, ovmf; arm64: qemu\-efi\-aarch64" in out and r"unit casaos\-hello\.service" in out and r"route \/v2\/hello" in out, out)
 check("summary: a new version links to the comparison of the two commits",
       "https://github.com/ReCasaOS/CasaOS-virt/compare/%s...%s" % ("1" * 40, "2" * 40) in out and "| virt | v0.2.5 (core) | v0.2.6 (core) | updated |" in out, out)
 check("summary: a new module has no comparison link", "hello-module/compare" not in out, out)
-check("summary: only the withdrawn version that is new is listed", "- virt v0.2.5: The upgrade failed." in out and "virt v0.2.0" not in out, out)
+check("summary: only the withdrawn version that is new is listed", r"- virt v0.2.5: The upgrade failed\." in out and "virt v0.2.0" not in out, out)
 check("summary: nothing says first publication when both are published", "first publication" not in out, out)
 
 code, out = summary({"catalogue-2.json": old2}, {"catalogue-2.json": old2, "catalogue-3.json": new3})
@@ -206,6 +230,52 @@ code, out = summary({}, {"catalogue-2.json": old2, "catalogue-3.json": new3})
 check("summary: nothing published yet is the first publication", code == 0 and "No catalogue is published yet" in out and "no catalogue-3.json yet" not in out, out)
 code, out = summary({"catalogue-2.json": old2}, {"catalogue-2.json": old2})
 check("summary: a new directory without catalogue-3.json says so, as before for schema 2", code == 0 and "No catalogue-3.json is built here" in out and "| virt | v0.2.5 (core) | v0.2.5 (core) | unchanged |" in out, out)
+# the summary of a hostile catalogue stays safe
+evil = "x](https://evil.example/a) <b>y</b> # head | cell `z` @all www.evil.example"
+h_old = catalogue([entry("virt", "v0.2.5", commit="1" * 40)])
+h_new = catalogue([entry("virt", "v0.2.6", commit="2" * 40), entry("hello", "v0.1.0", owner="someone", component="hello-module", commit="3" * 40)],
+                  withdrawn=[("virt", "v0.2.5", "x](https://evil.example/a) <b>y</b> # head | cell `z` www.evil.example")])
+h_new["modules"][1]["manifest"]["packages"] = {"common": [evil], evil: [evil + "\n# head"]}
+h_new["modules"][1]["manifest"]["unit"] = "u\n# head"
+h_new["modules"][1]["manifest"]["gateway_route"] = evil
+code, out = summary({"catalogue-3.json": h_old}, {"catalogue-3.json": h_new})
+lines = out.split("\n")
+check("summary: a hostile value gives no link, tag, heading, mention or extra line",
+      code == 0 and "](" not in out and "<b>" not in out and not re.search(r"(?<!\\)@", out) and "www.evil" not in out and not any(l.startswith("#") and "head" in l for l in lines[1:])
+      and sum(l.startswith("- **hello") for l in lines) == 1 and sum(l.startswith("- virt v0.2.5: ") for l in lines) == 1
+      and all(l.startswith(("|", "-", "  -", "#")) or not l for l in lines if l != "New versions:" and not l.endswith(":")), out)
+check("summary: a hostile reason keeps its pipe from breaking anything", any(l.startswith("- virt v0.2.5: x") and r"\|" in l for l in lines), out)
+
+# a file the strict reader refuses is a sentence and a status, not a traceback
+bad = catalogue([entry("virt", "v0.2.6")])
+bad["modules"][0]["commit"] = "nothex"
+code, out = summary({"catalogue-3.json": bad}, {"catalogue-3.json": good3})
+check("summary: a published file that does not pass is refused in one sentence", code == 1 and "Traceback" not in out and out.count("\n") == 1 and "not a schema 3 catalogue" in out, out)
+code, out = summary({"catalogue-3.json": good3}, {"catalogue-3.json": json.dumps(good3).replace('"serial": 7,', '"serial": 7, "serial": 8,')})
+check("summary: a repeated key is refused in one sentence", code == 1 and "Traceback" not in out, out)
+
+# nothing hidden
+same = catalogue([entry("virt", "v0.2.6", commit="1" * 40)])
+for label, mutate in (
+    ("a repository", lambda e: e.update(repository="someone/CasaOS-virt", tier="community")),
+    ("a commit", lambda e: e.update(commit="9" * 40)),
+    ("an archive", lambda e: e["assets"]["amd64"].update(sha256="c" * 64)),
+    ("a manifest", lambda e: e["manifest"].update(unit="other.service")),
+):
+    n = copy.deepcopy(same)
+    mutate(n["modules"][0])
+    code, out = summary({"catalogue-3.json": same}, {"catalogue-3.json": n})
+    check("summary: %s changed under the same tag is shown as such" % label, code == 0 and "changed under the same tag" in out and "unchanged" not in out, out)
+n = copy.deepcopy(same)
+n["modules"][0]["tier"] = "community"
+code, out = summary({"catalogue-3.json": same}, {"catalogue-3.json": n})
+check("summary: a tier alone is a tier change", "tier changed" in out and "changed under the same tag" not in out, out)
+
+was = catalogue([entry("virt", "v0.2.6")], withdrawn=[("virt", "v0.2.0", "Old."), ("virt", "v0.2.1", "Older.")])
+now = catalogue([entry("virt", "v0.2.6")], withdrawn=[("virt", "v0.2.0", "Old.")])
+code, out = summary({"catalogue-3.json": was}, {"catalogue-3.json": now})
+check("summary: a version no longer withdrawn is listed", "No longer withdrawn:" in out and "- virt v0.2.1" in out and "- virt v0.2.0" not in out and "Newly withdrawn" not in out, out)
+
 print()
 if failures:
     print("FAIL: %d test(s)" % failures)
