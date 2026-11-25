@@ -53,6 +53,8 @@ jobs:
           bash tests/test-publish.sh
           bash tests/test-published.sh
           python3 tests/test-compare.py
+          python3 tests/test-names.py
+          python3 tests/test-license.py
 
       # The catalogue published now: "nothing published yet" only on a 404 while the repository has no
       # release at all (asked with this job's read token); any other failure fails the check.
