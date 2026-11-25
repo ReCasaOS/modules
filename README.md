@@ -140,7 +140,8 @@ tag. Changing only the tier of a published version is allowed.
    (`scripts/compare.py`): a module at a tag already published must keep the same commit,
    archives and manifest, no tag may be lower than the published one, and a module never
    changes repository; and checks that no retired name, unit or route is taken, and that no
-   published module has disappeared without a line in `retired.env` (`scripts/names.py`);
+   published module has disappeared without a line in `retired.env` (`scripts/names.py`; that
+   last check applies once a `catalogue-3.json` is published);
 6. builds the core and has it read each catalogue as a box does; it must take it and list
    every module it should, at its pinned tag and tier.
 
@@ -273,7 +274,7 @@ On Linux, with bash, git, curl, Python 3.12 and Go, as a user that is not root:
 ```
 for t in tests/*.sh; do bash "$t"; done      # offline tests, with fake gh and curl
 for t in tests/*.py; do python3 "$t"; done
-bash scripts/published.sh published          # what is published now (needs gh and a token)
+GITHUB_REPOSITORY=ReCasaOS/modules GH_TOKEN="$(gh auth token)" bash scripts/published.sh published  # what is published now
 bash scripts/build.sh 1 out published        # OUTDIR must not exist
 python3 scripts/summary.py published out
 ```
@@ -301,7 +302,13 @@ python3 scripts/summary.py published out
   - In the catalogue (`publish.sh`): a draft `c<serial>` is left, with the published
     catalogue unchanged. Delete the draft, then start *Publish* by hand on `main`: the new
     run takes a new serial.
-- **Re-running a failed run** is refused: a run keeps its serial. Start a new one.
+- **Running the publish job again** with the same serial, after a failed copy or after
+  deleting a left draft, finishes the work: `mirror.sh` skips the copies that are
+  published and checked. What `publish.sh` refuses is a `c<serial>` that already exists,
+  draft or not.
+- **A release `m-<name>-<tag>` is never marked latest.** If one ever is, the address every
+  box reads answers nothing until the last `c<serial>` release is marked latest again: do
+  that first, then publish.
 - **The serial only goes up.** It is the number of the Publish run. If a file with too high
   a serial was ever served, boxes that read it keep it and refuse lower ones: the way out
   is to publish a serial above it, never to go back.

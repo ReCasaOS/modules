@@ -101,7 +101,8 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # 60: each archive to copy (up to 200 MiB, several of them) is uploaded to a draft and downloaded back
+    timeout-minutes: 60
     permissions:
       contents: write
     steps:

@@ -25,9 +25,13 @@ make_out() { # make_out DIR: what scripts/build.sh writes for two modules, and t
 import hashlib, json, os, sys
 out, env = sys.argv[1:]
 mods = [("alice-tool", "v0.1.0", "alice/CasaOS-alice-tool", "community"), ("virt", "v0.2.6", "ReCasaOS/CasaOS-VirtManagement", "core")]
-entries, lines = [], ["MODULE_VIRT_TAG=v0.2.6", "MODULE_ALICE_TOOL_OWNER=alice"]
+entries, lines = [], []
 for name, tag, repository, tier in mods:
     assets, sums = {}, []
+    up = name.upper().replace("-", "_")
+    lines += ["MODULE_%s_TAG=%s" % (up, tag), "MODULE_%s_COMPONENT=%s" % (up, repository.split("/")[1])]
+    if not repository.startswith("ReCasaOS/"):
+        lines.append("MODULE_%s_OWNER=%s" % (up, repository.split("/")[0]))
     d = os.path.join(out, "mirror", "m-%s-%s" % (name, tag))
     os.makedirs(d)
     for arch in ("amd64", "arm64"):
@@ -283,6 +287,68 @@ if ! run_mirror && [[ ! -s "${T}/state/calls" ]] && grep -q "not a schema 3 cata
     pass "a catalogue-3.json that is not a schema 3 catalogue is refused before any call"
 else
     fail "a catalogue-3.json that is not a schema 3 catalogue is refused before any call"; cat "${T}/log"
+fi
+
+# 11. the entries are bound to modules.env, which this job reads itself, not to what the build job says of them
+reset
+python3 - "${T}/out/catalogue-3.json" <<'EOF'
+import json, sys
+p = sys.argv[1]
+c = json.load(open(p))
+for e in c["modules"]:
+    if e["name"] == "alice-tool":
+        e["repository"] = "ReCasaOS/" + e["component"]
+json.dump(c, open(p, "w"))
+EOF
+if ! run_mirror && no_write && grep -q "alice-tool" "${T}/log" && grep -q "repository" "${T}/log"; then
+    pass "an entry that relabels a module pinned in modules.env as ReCasaOS's is refused, nothing created"
+else
+    fail "an entry that relabels a module pinned in modules.env as ReCasaOS's is refused, nothing created"; cat "${T}/log" "${T}/state/calls"
+fi
+reset
+sed -i '/^MODULE_ALICE_TOOL_/d' "${T}/modules.env"
+if ! run_mirror && no_write && grep -q "alice-tool, which modules.env does not list" "${T}/log"; then
+    pass "an entry that modules.env does not list is refused, nothing created"
+else
+    fail "an entry that modules.env does not list is refused, nothing created"; cat "${T}/log" "${T}/state/calls"
+fi
+reset
+sed -i 's/^MODULE_VIRT_TAG=.*/MODULE_VIRT_TAG=v0.2.7/' "${T}/modules.env"
+if ! run_mirror && no_write && grep -q "virt at v0.2.6" "${T}/log"; then
+    pass "an entry at another tag than modules.env lists is refused, nothing created"
+else
+    fail "an entry at another tag than modules.env lists is refused, nothing created"; cat "${T}/log" "${T}/state/calls"
+fi
+reset
+printf 'MODULE_BOB_TAG=v1.0.0\n' >>"${T}/modules.env"
+if ! run_mirror && no_write && grep -q "lists the module bob" "${T}/log"; then
+    pass "a module of modules.env that the catalogue lacks is refused, nothing created"
+else
+    fail "a module of modules.env that the catalogue lacks is refused, nothing created"; cat "${T}/log" "${T}/state/calls"
+fi
+reset
+sed -i 's/^MODULE_VIRT_COMPONENT=.*/MODULE_VIRT_COMPONENT=Other/' "${T}/modules.env"
+if ! run_mirror && no_write && grep -q "component" "${T}/log"; then
+    pass "an entry of another component than modules.env lists is refused, nothing created"
+else
+    fail "an entry of another component than modules.env lists is refused, nothing created"; cat "${T}/log" "${T}/state/calls"
+fi
+reset
+carry "${ALICE}"
+sed -i 's/^\(MODULE_ALICE_TOOL_SHA256_AMD64=\).*/\1'"$(printf 'c%.0s' $(seq 1 64))"'/' "${T}/modules.env"
+if ! run_mirror && no_write && grep -q "modules.env pins" "${T}/log"; then
+    pass "a carried entry whose sums are not the pinned ones is refused too"
+else
+    fail "a carried entry whose sums are not the pinned ones is refused too"; cat "${T}/log" "${T}/state/calls"
+fi
+
+# 12. checksums.txt names each archive once
+reset
+printf '%s  linux-amd64-casaos-virt-v0.2.6.tar.gz\n' "$(printf 'd%.0s' $(seq 1 64))" >>"${T}/out/mirror/${VIRT}/checksums.txt"
+if ! run_mirror && no_write && grep -q "more than one line" "${T}/log"; then
+    pass "a checksums.txt that gives a second sum for an archive stops the run"
+else
+    fail "a checksums.txt that gives a second sum for an archive stops the run"; cat "${T}/log" "${T}/state/calls"
 fi
 
 echo

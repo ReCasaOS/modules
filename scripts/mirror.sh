@@ -73,7 +73,7 @@ trap 'rm -rf "${work}"' EXIT
 err="${work}/err"
 n=0
 
-# --- the entries of the catalogue: one line each, tab separated: tag owner name file-amd64 sum-amd64 file-arm64 sum-arm64
+# --- the entries of the catalogue: one line each, tab separated: tag repository name file-amd64 sum-amd64 file-arm64 sum-arm64 version component
 plan="$(python3 -I - "${ROOT}/scripts" "${outdir}" 2>"${err}" <<'EOF'
 import os, sys
 sys.path.insert(0, sys.argv[1])
@@ -87,7 +87,7 @@ tags = set()
 for name, e in entries.items():
     tag = "m-%s-%s" % (name, e["tag"])
     prefix = "%s%s/" % (compare.MIRROR_URL, tag)
-    row = [tag, e["repository"].split("/")[0], name]
+    row = [tag, e["repository"], name]
     for arch in ("amd64", "arm64"):
         url = e["assets"][arch]["url"]
         file = url[len(prefix):]
@@ -96,7 +96,7 @@ for name, e in entries.items():
             sys.exit("Module %s, %s: the archive is not at %s." % (name, arch, prefix))
         row += [file, e["assets"][arch]["sha256"]]
     tags.add(tag)
-    print("\t".join(row))
+    print("\t".join(row + [e["tag"], e["component"]]))
 mirror = os.path.join(out, "mirror")
 if os.path.lexists(mirror):
     if os.path.islink(mirror) or not os.path.isdir(mirror):
@@ -173,14 +173,37 @@ check_published() {
     done
 }
 
-# pin NAME ARCH: pinned = the SHA-256 that modules.env pins for the module's archive: one line, exactly
-pin() {
-    local key lines
-    key="MODULE_$(tr 'a-z-' 'A-Z_' <<<"$1")_SHA256_$(tr 'a-z' 'A-Z' <<<"$2")"
-    mapfile -t lines < <(grep "^${key}=" "${envfile}" || true)
-    [[ ${#lines[@]} -eq 1 && "${lines[0]}" =~ ^${key}=([0-9a-f]{64})$ ]] ||
-        fail "modules.env has not exactly one line ${key}=<64 lower case hexadecimal digits>; nothing was written."
-    pinned="${BASH_REMATCH[1]}"
+# env_value KEY REGEX [OPTIONAL]: val = the value of the one line KEY=<value> of modules.env, which must match REGEX in full.
+# With OPTIONAL, no line at all is val="" ; two lines, or one that does not match, never pass.
+env_value() {
+    local lines
+    mapfile -t lines < <(grep "^$1=" "${envfile}" || true)
+    val=""
+    [[ ${#lines[@]} -eq 0 && -n "${3:-}" ]] && return 0
+    [[ ${#lines[@]} -eq 1 && "${lines[0]#"$1="}" =~ ^($2)$ ]] ||
+        fail "modules.env has not exactly one line $1=<value>; nothing was written."
+    val="${lines[0]#"$1="}"
+}
+
+# bind NAME VERSION REPOSITORY COMPONENT SUM SUM: the entry is the module modules.env lists, in the owner's repository,
+# and (for an owner other than ReCasaOS) with the two sums that modules.env pins. owner = that owner.
+bind() {
+    local up arch sum
+    up="$(tr 'a-z-' 'A-Z_' <<<"$1")"
+    env_value "MODULE_${up}_TAG" 'v[0-9]+\.[0-9]+\.[0-9]+' optional
+    [[ -n "${val}" ]] || fail "The catalogue holds the module $1, which modules.env does not list; nothing was written."
+    [[ "${val}" == "$2" ]] || fail "The catalogue has $1 at ${2}, and modules.env lists it at ${val}; nothing was written."
+    env_value "MODULE_${up}_COMPONENT" '[A-Za-z][A-Za-z0-9._-]*'
+    [[ "${val}" == "$4" ]] || fail "The catalogue has the component $4 for $1, and modules.env lists ${val}; nothing was written."
+    env_value "MODULE_${up}_OWNER" '[A-Za-z0-9-]+' optional
+    owner="${val:-ReCasaOS}"
+    [[ "$3" == "${owner}/$4" ]] || fail "The catalogue has the repository $3 for $1, and modules.env lists ${owner}/$4; nothing was written."
+    [[ "${owner}" == ReCasaOS ]] && return 0
+    for arch in amd64 arm64; do
+        env_value "MODULE_${up}_SHA256_$(tr 'a-z' 'A-Z' <<<"${arch}")" '[0-9a-f]{64}'
+        [[ "${arch}" == amd64 ]] && sum="$5" || sum="$6"
+        [[ "${val}" == "${sum}" ]] || fail "modules.env pins ${val} for $1 (${arch}), and the catalogue says ${sum}; nothing was written."
+    done
 }
 
 # verify_local TAG OWNER NAME FILE SUM FILE SUM: the folder of the artifact for a release that is not there yet
@@ -199,20 +222,20 @@ verify_local() {
         got="$(sum_of "${dir}/${f}")"
         [[ "${got}" == "${s}" ]] ||
             fail "The archive ${f} of the artifact has the SHA-256 ${got}, and the catalogue says ${s}; nothing was written."
-        if [[ "${owner}" != ReCasaOS ]]; then
-            pin "${name}" "${arch}"
-            [[ "${got}" == "${pinned}" ]] ||
-                fail "The archive ${f} of the artifact has the SHA-256 ${got}, and modules.env pins ${pinned} for ${name} (${arch}); nothing was written."
-        fi
         grep -qxF "${s}  ${f}" "${dir}/checksums.txt" ||
             fail "mirror/${tag}/checksums.txt has no line '${s}  ${f}'; nothing was written."
+        [[ "$(grep -cF -- "  ${f}" "${dir}/checksums.txt")" == 1 ]] ||
+            fail "mirror/${tag}/checksums.txt names ${f} on more than one line; nothing was written."
     done
 }
 
 # --- 1. every release is looked up and every archive to copy is checked, before anything is created
 todo=()
+names=()
 there=0
-while IFS=$'\t' read -r tag owner name fa sa fb sb; do
+while IFS=$'\t' read -r tag repository name fa sa fb sb version component; do
+    bind "${name}" "${version}" "${repository}" "${component}" "${sa}" "${sb}"
+    names+=("${name}")
     view_release "${tag}"
     case "${state}" in
     draft) fail "The release ${tag} exists as a draft, left by an earlier try: delete the draft ${tag} and run again; nothing was written." ;;
@@ -226,6 +249,12 @@ while IFS=$'\t' read -r tag owner name fa sa fb sb; do
         ;;
     esac
 done <<<"${plan}"
+
+# every module that modules.env lists has its entry
+while read -r key; do
+    name="$(tr 'A-Z_' 'a-z-' <<<"${key}")"
+    [[ " ${names[*]} " == *" ${name} "* ]] || fail "modules.env lists the module ${name}, and the catalogue has no entry for it; nothing was written."
+done < <(sed -n 's/^MODULE_\([A-Z][A-Z0-9_]*\)_TAG=.*/\1/p' "${envfile}")
 
 # --- 2. each missing release, one after the other
 for row in "${todo[@]}"; do
