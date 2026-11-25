@@ -111,3 +111,21 @@ bash tests/test-publish.sh                # offline tests, with a fake gh
 bash tests/test-published.sh              # offline tests, with a fake gh and a fake curl
 bash scripts/build.sh 1 out/catalogue-2.json
 ```
+
+## For the maintainer
+
+- **A published release is final.** Never delete one, never edit one by hand, never
+  replace its file: boxes keep the highest serial they have seen. A correction is a new
+  merge, which publishes the next serial.
+- **A Publish run shown as cancelled** was replaced by a newer one waiting behind it. The
+  newer run publishes everything `main` holds, so nothing is lost. If no run followed,
+  start *Publish* by hand on `main`.
+- **A draft left behind** means a publication stopped after creating it; its log names the
+  draft. Nothing was published. Delete the draft, then start *Publish* by hand on `main`:
+  the new run takes a new serial.
+- **Re-running a failed run** is refused: a run keeps its serial. Start a new one.
+- **The serial only goes up.** It is the number of the Publish run. If a file with too high
+  a serial was ever served, boxes that read it keep it and refuse lower ones: the way out
+  is to publish a serial above it, never to go back.
+- **`refs.env` moves forward.** Pin commits that are on `main` of their repository, and
+  newer than the ones they replace.
