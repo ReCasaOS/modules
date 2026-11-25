@@ -153,12 +153,14 @@ esac
     fail "The core at ${core_commit} does not take the catalogue, or does not list its modules (see above)."
 
 # proof does not tell the online file from a shipped one: the core must say it read this one, at this serial
-"${PYTHON}" - "${proof}/out" "${serial}" <<'EOF' || fail "The core at ${core_commit} did not read the catalogue as its online catalogue at serial ${serial}."
+# (-I and no assert: no PYTHON* variable of the environment can turn this check off)
+"${PYTHON}" -I - "${proof}/out" "${serial}" <<'EOF' || fail "The core at ${core_commit} did not read the catalogue as its online catalogue at serial ${serial}."
 import json, sys
 out = json.load(open(sys.argv[1]))
 online = out["catalogue"].get("online") or {}
-assert online.get("ok") is True and online.get("serial") == int(sys.argv[2]), online
-assert all(m.get("source") == "online" for m in out["modules"]), out["modules"]
+if not (online.get("ok") is True and online.get("serial") == int(sys.argv[2])
+        and all(m.get("source") == "online" for m in out["modules"])):
+    sys.exit(1)
 EOF
 
 mkdir -p "$(dirname "${out}")"

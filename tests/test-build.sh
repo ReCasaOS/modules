@@ -132,6 +132,8 @@ EOF
 CORE_GOOD="$(commit_all "${core}" "fake core")"
 sed -i 's/var refuse = false/var refuse = true/' "${core}/main.go"
 CORE_REFUSES="$(commit_all "${core}" "fake core that refuses")"
+sed -i -e 's/var refuse = true/var refuse = false/' -e 's/"serial": cat.Serial}/"serial": cat.Serial + 1}/' "${core}/main.go"
+CORE_OTHER_SERIAL="$(commit_all "${core}" "fake core that reports another serial")"
 # the same core in a repository that has no main
 git clone -q --bare "${core}" "${T}/core-nomain"
 git -C "${T}/core-nomain" branch -m main other
@@ -178,6 +180,15 @@ if ! run_build "${INST_GOOD}" "${CORE_REFUSES}" 7 "${out}" && grep -q "does not 
     pass "a core that refuses the catalogue fails and leaves no file"
 else
     fail "a core that refuses the catalogue fails and leaves no file"; cat "${T}/log"
+fi
+
+# 3b. a core that reports another serial fails, even with PYTHONOPTIMIZE in the environment
+echo stale >"${out}"
+if ! run_build "${INST_GOOD}" "${CORE_OTHER_SERIAL}" 7 "${out}" PYTHONOPTIMIZE=1 &&
+    grep -q "did not read the catalogue as its online catalogue at serial 7" "${T}/log" && [[ ! -e "${out}" ]]; then
+    pass "a core that reports another serial fails, with PYTHONOPTIMIZE=1 too"
+else
+    fail "a core that reports another serial fails, with PYTHONOPTIMIZE=1 too"; cat "${T}/log"
 fi
 
 # 4. a commit in refs.env that is not 40 lower case hex digits is refused before any fetch
