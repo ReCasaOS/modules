@@ -5,7 +5,7 @@
 
 Each directory holds catalogue-2.json and, from the first publication of schema 3, catalogue-3.json. PUBLISHED_DIR is what scripts/published.sh wrote: when it holds
 no catalogue-2.json, nothing is published yet. Each module is listed with its tag and tier before and after: added, removed, updated (a higher tag), changed under the
-same tag (a repository, commit, archive or manifest that differs, which compare.py refuses), tier changed or unchanged; a module removed is said plainly, a merge
+same tag (a repository, commit, archive or manifest that differs, which compare.py refuses; judged between files of one format: schema 3 when the published side has one, else schema 2), tier changed or unchanged; a module removed is said plainly, a merge
 publishes that to every box. The schema 3 file of a directory, when it has one, is the one read, as it holds the modules of other owners too. Below the table, each module
 added or updated says its repository, packages, unit and route, an update links to what changed in its repository, and the withdrawn versions that are new, and those
 that are no longer, are listed.
@@ -24,19 +24,21 @@ REPOSITORY_RE = re.compile(r"[A-Za-z0-9-]+/[A-Za-z][A-Za-z0-9._-]*")
 
 
 def read(directory):
-    """(the catalogue read in directory, whether it is schema 3): {} when there is none, which is nothing published."""
-    for name, schema in (("catalogue-3.json", 3), ("catalogue-2.json", 2)):
-        path = os.path.join(directory, name)
-        if os.path.exists(path):
-            return compare.read(path, schema), schema == 3
-    return {}, False
+    """{2: the schema 2 catalogue or None, 3: the schema 3 catalogue or None} of directory: both None is nothing published."""
+    out = {}
+    for schema in (2, 3):
+        path = os.path.join(directory, "catalogue-%d.json" % schema)
+        out[schema] = compare.read(path, schema) if os.path.exists(path) else None
+    return out
 
 
 def md(value):
-    """A value of a catalogue as Markdown text: ASCII punctuation escaped, anything but letters, digits, marks, symbols and a space made a space or a question mark."""
+    """A value of a catalogue as Markdown text: ASCII punctuation escaped, an @ written (at), anything but letters, digits, marks, symbols and a space made a space or a question mark."""
     out = []
     for c in str(value):
-        if c.isascii() and not c.isalnum() and c != " " and c.isprintable():
+        if c == "@":
+            out.append("(at)")  # never an @word: GitHub would notify that account
+        elif c.isascii() and not c.isalnum() and c != " " and c.isprintable():
             out.append("\\" + c)
         elif c == " " or c.isalnum() or (c.isprintable() and not c.isascii() and c not in "  "):
             out.append(c)
@@ -69,11 +71,17 @@ def details(old, new):
 
 def main(published_dir, new_dir):
     try:
-        (old_c, old3), (new_c, new3) = read(published_dir), read(new_dir)
+        olds, news = read(published_dir), read(new_dir)
     except compare.Refused as err:
         sys.exit(str(err))
+    old3, new3 = olds[3] is not None, news[3] is not None
+    old_c, new_c = olds[3] or olds[2] or {}, news[3] or news[2] or {}
     old = {m["name"]: m for m in old_c.get("modules", [])}
     new = {m["name"]: m for m in new_c.get("modules", [])}
+    # "changed under the same tag" is judged between files of one format, the one the published side has
+    fmt = 3 if old3 and new3 else 2
+    o_f = {m["name"]: m for m in (olds[fmt] or {}).get("modules", [])}
+    n_f = {m["name"]: m for m in (news[fmt] or {}).get("modules", [])}
 
     lines = ["## Modules catalogue", ""]
     if not old_c:
@@ -92,7 +100,7 @@ def main(published_dir, new_dir):
             change = "**removed**"
         elif before["tag"] != after["tag"]:
             change = "updated"  # compare.py lets through only a higher tag
-        elif any(before.get(k) != after.get(k) for k in before.keys() | after.keys() if k != "tier"):
+        elif name in o_f and name in n_f and any(o_f[name].get(k) != n_f[name].get(k) for k in o_f[name].keys() | n_f[name].keys() if k != "tier"):
             change = "**changed under the same tag**"  # compare.py refuses it
         elif before["tier"] != after["tier"]:
             change = "tier changed"

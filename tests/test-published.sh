@@ -123,8 +123,8 @@ for tag in 'x' 'c0' 'c03' 'c3/../x' ''; do
         fail "the tag '${tag}': refused before any download"; cat "${T}/log"; files
     fi
 done
-for badrepo in '' 'ReCasaOS' 'a/b/c' 'ReCasaOS/modules;x' '../x'; do
-    if ! run GITHUB_REPOSITORY="${badrepo}" FAKE_GH_LATEST="${both}" && one_line && [[ ! -s "${T}/calls" ]]; then
+for badrepo in '' 'ReCasaOS' 'a/b/c' 'ReCasaOS/modules;x' '../x' 'a/..' 'a/.' './x'; do
+    if ! run GITHUB_REPOSITORY="${badrepo}" FAKE_GH_LATEST="${both}" && one_line && empty && [[ ! -s "${T}/calls" ]]; then
         pass "the repository '${badrepo}': refused before any call"
     else
         fail "the repository '${badrepo}': refused before any call"; cat "${T}/log"

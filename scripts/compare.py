@@ -62,7 +62,7 @@ def read(path, schema=2):
         raise bad("larger than 1 MiB")
     try:
         c = json.loads(raw.decode("utf-8"), object_pairs_hook=no_duplicates)
-    except (UnicodeDecodeError, ValueError) as err:
+    except (UnicodeDecodeError, ValueError, RecursionError) as err:
         raise bad("not JSON: %s" % err)
     keys = {"schema", "serial", "generated", "modules"} | ({"withdrawn"} if schema == 3 else set())
     if not isinstance(c, dict) or set(c) != keys:

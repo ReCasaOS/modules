@@ -33,7 +33,6 @@ CURL="${CURL:-curl}"
 [[ $# -eq 1 ]] || { echo "usage: scripts/published.sh OUTDIR" >&2; exit 2; }
 outdir="$1"
 repo="${GITHUB_REPOSITORY:-}"
-[[ "${repo}" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || { echo "published.sh: GITHUB_REPOSITORY '${repo}' is not <owner>/<repository>." >&2; exit 1; }
 
 clean() { rm -f "${outdir}/catalogue-2.json" "${outdir}/catalogue-3.json"; }
 fail() {
@@ -42,6 +41,8 @@ fail() {
     exit 1
 }
 
+name="${repo#*/}"
+[[ "${repo}" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ && "${name}" != . && "${name}" != .. ]] || { clean; fail "GITHUB_REPOSITORY '${repo}' is not <owner>/<repository>."; }
 mkdir -p "${outdir}" || fail "${outdir} cannot be made."
 clean
 

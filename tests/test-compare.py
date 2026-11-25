@@ -241,7 +241,7 @@ h_new["modules"][1]["manifest"]["gateway_route"] = evil
 code, out = summary({"catalogue-3.json": h_old}, {"catalogue-3.json": h_new})
 lines = out.split("\n")
 check("summary: a hostile value gives no link, tag, heading, mention or extra line",
-      code == 0 and "](" not in out and "<b>" not in out and not re.search(r"(?<!\\)@", out) and "www.evil" not in out and not any(l.startswith("#") and "head" in l for l in lines[1:])
+      code == 0 and "](" not in out and "<b>" not in out and not re.search(r"@", out) and "(at)all" in out and "www.evil" not in out and not any(l.startswith("#") and "head" in l for l in lines[1:])
       and sum(l.startswith("- **hello") for l in lines) == 1 and sum(l.startswith("- virt v0.2.5: ") for l in lines) == 1
       and all(l.startswith(("|", "-", "  -", "#")) or not l for l in lines if l != "New versions:" and not l.endswith(":")), out)
 check("summary: a hostile reason keeps its pipe from breaking anything", any(l.startswith("- virt v0.2.5: x") and r"\|" in l for l in lines), out)
@@ -275,6 +275,35 @@ was = catalogue([entry("virt", "v0.2.6")], withdrawn=[("virt", "v0.2.0", "Old.")
 now = catalogue([entry("virt", "v0.2.6")], withdrawn=[("virt", "v0.2.0", "Old.")])
 code, out = summary({"catalogue-3.json": was}, {"catalogue-3.json": now})
 check("summary: a version no longer withdrawn is listed", "No longer withdrawn:" in out and "- virt v0.2.1" in out and "- virt v0.2.0" not in out and "Newly withdrawn" not in out, out)
+
+# the first publication of schema 3: the published side has schema 2 only
+f2 = lambda *mods: catalogue([entry(n, t, commit=c, schema=2) for n, t, c in mods], schema=2)
+f3 = lambda *mods: catalogue([entry(n, t, commit=c) for n, t, c in mods])
+base = [("virt", "v0.2.6", "1" * 40), ("mcp", "v0.2.1", "4" * 40)]
+code, out = summary({"catalogue-2.json": f2(*base)}, {"catalogue-2.json": f2(*base), "catalogue-3.json": f3(*base)})
+check("summary: first schema 3 publication, same modules at the same tags: none changed",
+      code == 0 and "changed under" not in out and out.count("unchanged") == 2 and "no catalogue-3.json yet" in out, out)
+up = [("virt", "v0.2.7", "2" * 40), ("mcp", "v0.2.1", "4" * 40)]
+code, out = summary({"catalogue-2.json": f2(*base)}, {"catalogue-2.json": f2(*up), "catalogue-3.json": f3(*up)})
+check("summary: first schema 3 publication with one higher tag: that one is a new version with its link",
+      code == 0 and "changed under" not in out and out.count("unchanged") == 1 and "| virt | v0.2.6 (core) | v0.2.7 (core) | updated |" in out
+      and "https://github.com/ReCasaOS/CasaOS-virt/compare/%s...%s" % ("1" * 40, "2" * 40) in out, out)
+chg = [("virt", "v0.2.6", "9" * 40), ("mcp", "v0.2.1", "4" * 40)]
+code, out = summary({"catalogue-2.json": f2(*base)}, {"catalogue-2.json": f2(*chg), "catalogue-3.json": f3(*chg)})
+check("summary: first schema 3 publication, a real change under the same tag in schema 2 is shown",
+      code == 0 and out.count("changed under the same tag") == 1 and "| virt | v0.2.6 (core) | v0.2.6 (core) | **changed under the same tag** |" in out, out)
+code, out = summary({"catalogue-2.json": f2(*base)}, {"catalogue-2.json": f2(*base), "catalogue-3.json": f3(*base, ("hello", "v0.1.0", "3" * 40))})
+check("summary: a module only in the new schema 3 file is new", "| hello | - | v0.1.0 (core) | added |" in out, out)
+
+# a JSON nested too deep is a refused file, not a traceback
+deep = write("[" * 200000)
+p = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "scripts", "compare.py"), deep, deep], capture_output=True, text=True)
+check("compare.py: nesting too deep is one sentence, status 1", p.returncode == 1 and "Traceback" not in p.stderr and "not a schema 2 catalogue" in p.stderr, p.stderr[-300:])
+d = os.path.join(T, "deep")
+os.makedirs(d)
+open(os.path.join(d, "catalogue-2.json"), "w").write("[" * 200000)
+p = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "scripts", "summary.py"), d, d], capture_output=True, text=True)
+check("summary.py: nesting too deep is one sentence, status 1", p.returncode == 1 and "Traceback" not in p.stderr and "not a schema 2 catalogue" in p.stderr, p.stderr[-300:])
 
 print()
 if failures:
