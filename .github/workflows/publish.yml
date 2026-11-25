@@ -16,9 +16,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# one publication at a time, none cancelled half way
+# one publication at a time, none cancelled half way. The group is per ref: a run started on another
+# branch (whose jobs the `if` below skips) must never queue in place of a pending run of main, and so
+# cancel it.
 concurrency:
-  group: publish
+  group: publish-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
