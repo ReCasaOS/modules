@@ -345,11 +345,73 @@ fi
 # 12. checksums.txt names each archive once
 reset
 printf '%s  linux-amd64-casaos-virt-v0.2.6.tar.gz\n' "$(printf 'd%.0s' $(seq 1 64))" >>"${T}/out/mirror/${VIRT}/checksums.txt"
-if ! run_mirror && no_write && grep -q "more than one line" "${T}/log"; then
+if ! run_mirror && no_write && grep -q "checksums.txt is not exactly" "${T}/log"; then
     pass "a checksums.txt that gives a second sum for an archive stops the run"
 else
     fail "a checksums.txt that gives a second sum for an archive stops the run"; cat "${T}/log" "${T}/state/calls"
 fi
+
+# 13. modules.env is read to the letter
+reset
+python3 - "${T}/out/catalogue-3.json" <<'EOF'
+import json, sys
+p = sys.argv[1]
+c = json.load(open(p))
+for e in c["modules"]:
+    if e["name"] == "alice-tool":
+        e["repository"] = "ReCasaOS/" + e["component"]
+json.dump(c, open(p, "w"))
+EOF
+sed -i 's/^MODULE_ALICE_TOOL_OWNER=/ MODULE_ALICE_TOOL_OWNER=/' "${T}/modules.env"
+if ! run_mirror && no_write && grep -q "modules.env line" "${T}/log"; then
+    pass "an indented OWNER line, with an entry relabelled as ReCasaOS's, is refused, nothing created"
+else
+    fail "an indented OWNER line, with an entry relabelled as ReCasaOS's, is refused, nothing created"; cat "${T}/log" "${T}/state/calls"
+fi
+bad_env() { # bad_env WHAT SED-SCRIPT: modules.env changed, the run refused on a line of it, nothing created
+    reset
+    sed -i "$2" "${T}/modules.env"
+    if ! run_mirror && no_write && grep -q "modules.env" "${T}/log" && grep -Eq "line [0-9]+|tab or a carriage" "${T}/log"; then
+        pass "modules.env with $1 is refused, nothing created"
+    else
+        fail "modules.env with $1 is refused, nothing created"; cat "${T}/log" "${T}/state/calls"
+    fi
+}
+bad_env "an indented TAG line" 's/^MODULE_VIRT_TAG=/ MODULE_VIRT_TAG=/'
+bad_env "CRLF line ends" 's/$/\r/'
+bad_env "a trailing space" 's/^MODULE_VIRT_COMPONENT=.*/& /'
+bad_env "a comment indented by a space" '1i\ # indented comment'
+bad_env "a line with a tab" '1i\MODULE_X_TAG=v1.0.0\t'
+bad_env "a line of blanks" '1i\   '
+reset
+run_mirror MODULES_TEST_ENV_FILE="${ROOT}/modules.env"
+if ! grep -q "modules.env line\|tab or a carriage" "${T}/log"; then
+    pass "the modules.env of this repository passes the reading to the letter"
+else
+    fail "the modules.env of this repository passes the reading to the letter"; cat "${T}/log"
+fi
+
+# 14. checksums.txt is exactly the two lines, in either order
+for variant in star tab third blank cr order; do
+    reset
+    f="${T}/out/mirror/${VIRT}/checksums.txt"
+    a="$(sed -n 1p "${f}")"; b="$(sed -n 2p "${f}")"
+    case "${variant}" in
+    star) printf '%s\n%s\n' "${a}" "$(sed 's/  / */' <<<"${b}")" >"${f}" ;;
+    tab) printf '%s\n%s\n' "${a}" "$(sed 's/  /\t/' <<<"${b}")" >"${f}" ;;
+    third) printf '%s\n%s\n%s\n' "${a}" "${b}" "${a}" >"${f}" ;;
+    blank) printf '%s\n\n%s\n' "${a}" "${b}" >"${f}" ;;
+    cr) printf '%s\r\n%s\r\n' "${a}" "${b}" >"${f}" ;;
+    order) printf '%s\n%s\n' "${b}" "${a}" >"${f}" ;;
+    esac
+    if [[ "${variant}" == order ]]; then
+        if run_mirror; then pass "checksums.txt with its two lines in the other order is accepted"; else fail "checksums.txt in the other order is accepted"; cat "${T}/log"; fi
+    elif ! run_mirror && no_write && grep -q "checksums.txt is not exactly" "${T}/log"; then
+        pass "checksums.txt with ${variant} is refused, nothing created"
+    else
+        fail "checksums.txt with ${variant} is refused, nothing created"; cat "${T}/log" "${T}/state/calls"
+    fi
+done
 
 echo
 if [[ "${failures}" -eq 0 ]]; then

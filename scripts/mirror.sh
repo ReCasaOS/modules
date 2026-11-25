@@ -73,6 +73,16 @@ trap 'rm -rf "${work}"' EXIT
 err="${work}/err"
 n=0
 
+# modules.env, read to the letter: the builder strips each line, this job matches whole lines, so a line that is neither
+# empty, a comment at column 0 nor KEY=value without a blank is refused (and with it any tab or carriage return)
+lineno=0
+while IFS= read -r line || [[ -n "${line}" ]]; do
+    lineno=$((lineno + 1))
+    [[ -z "${line}" || "${line}" == "#"* || "${line}" =~ ^[A-Z][A-Z0-9_]*=[^[:space:]]*$ ]] ||
+        fail "modules.env line ${lineno} is none of: empty, a comment starting at column 0, NAME=value with no blank; nothing was written."
+done <"${envfile}"
+! grep -q $'[\t\r]' "${envfile}" || fail "modules.env holds a tab or a carriage return; nothing was written."
+
 # --- the entries of the catalogue: one line each, tab separated: tag repository name file-amd64 sum-amd64 file-arm64 sum-arm64 version component
 plan="$(python3 -I - "${ROOT}/scripts" "${outdir}" 2>"${err}" <<'EOF'
 import os, sys
@@ -206,27 +216,28 @@ bind() {
     done
 }
 
-# verify_local TAG OWNER NAME FILE SUM FILE SUM: the folder of the artifact for a release that is not there yet
+# verify_local TAG FILE SUM FILE SUM: the folder of the artifact for a release that is not there yet
 verify_local() {
-    local tag="$1" owner="$2" name="$3" dir="${outdir}/mirror/$1" listing want f s got
+    local tag="$1" dir="${outdir}/mirror/$1" listing want f s got
     [[ -d "${dir}" && ! -L "${dir}" ]] ||
         fail "The release ${tag} does not exist, and the artifact has no mirror/${tag} to make it from; nothing was written."
     listing="$(find "${dir}" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort | paste -sd' ' -)"
-    want="$(printf '%s\n' checksums.txt "$4" "$6" | LC_ALL=C sort | paste -sd' ' -)"
+    want="$(printf '%s\n' checksums.txt "$2" "$4" | LC_ALL=C sort | paste -sd' ' -)"
     [[ "${listing}" == "${want}" ]] || fail "mirror/${tag} holds '${listing}', not '${want}'; nothing was written."
-    for f in checksums.txt "$4" "$6"; do
+    for f in checksums.txt "$2" "$4"; do
         [[ -f "${dir}/${f}" && ! -L "${dir}/${f}" ]] || fail "mirror/${tag}/${f} is not a regular file; nothing was written."
     done
-    for a in amd64:"$4":"$5" arm64:"$6":"$7"; do
-        IFS=: read -r arch f s <<<"${a}"
+    for a in "$2:$3" "$4:$5"; do
+        IFS=: read -r f s <<<"${a}"
         got="$(sum_of "${dir}/${f}")"
         [[ "${got}" == "${s}" ]] ||
             fail "The archive ${f} of the artifact has the SHA-256 ${got}, and the catalogue says ${s}; nothing was written."
-        grep -qxF "${s}  ${f}" "${dir}/checksums.txt" ||
-            fail "mirror/${tag}/checksums.txt has no line '${s}  ${f}'; nothing was written."
-        [[ "$(grep -cF -- "  ${f}" "${dir}/checksums.txt")" == 1 ]] ||
-            fail "mirror/${tag}/checksums.txt names ${f} on more than one line; nothing was written."
     done
+    # exactly the two lines "<sum>  <file>", in either order: the builder reads this file more loosely than that
+    printf '%s  %s\n%s  %s\n' "$3" "$2" "$5" "$4" >"${work}/sums1"
+    printf '%s  %s\n%s  %s\n' "$5" "$4" "$3" "$2" >"${work}/sums2"
+    cmp -s "${dir}/checksums.txt" "${work}/sums1" || cmp -s "${dir}/checksums.txt" "${work}/sums2" ||
+        fail "mirror/${tag}/checksums.txt is not exactly the two lines '<SHA-256>  <file>' of $2 and $4; nothing was written."
 }
 
 # --- 1. every release is looked up and every archive to copy is checked, before anything is created
@@ -244,7 +255,7 @@ while IFS=$'\t' read -r tag repository name fa sa fb sb version component; do
         there=$((there + 1))
         ;;
     absent)
-        verify_local "${tag}" "${owner}" "${name}" "${fa}" "${sa}" "${fb}" "${sb}"
+        verify_local "${tag}" "${fa}" "${sa}" "${fb}" "${sb}"
         todo+=("${tag}"$'\t'"${owner}"$'\t'"${name}"$'\t'"${fa}"$'\t'"${sa}"$'\t'"${fb}"$'\t'"${sb}")
         ;;
     esac
