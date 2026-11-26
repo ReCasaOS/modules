@@ -47,6 +47,15 @@ jobs:
           go-version-file: ${{ runner.temp }}/core-gomod/go.mod
           cache: false
 
+      # the list of unattested.txt only shrinks: no line that the base branch does not have
+      - name: Check that unattested.txt only shrinks
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch -q --depth 1 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/base"
+          bash scripts/unattested.sh check refs/remotes/origin/base
+
       # every test of tests/, so that a new one cannot be forgotten here
       - name: Test the scripts
         run: |

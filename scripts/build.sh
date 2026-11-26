@@ -26,9 +26,10 @@
 # 3. runs its scripts/build-modules-catalogue.py build, once for schema 2 and once
 #    for schema 3 with withdrawn.txt, with the same serial SERIAL and the same time
 #    now (UTC);
-# 4. for each module that was fetched now, collects its files for mirror/; for one
-#    of an owner other than ReCasaOS, scripts/attest.sh checks the provenance of
-#    both archives and scripts/license.py that each carries a LICENSE;
+# 4. for each module that was fetched now, collects its files for mirror/;
+#    scripts/attest.sh checks the provenance of both archives (not of the versions
+#    that unattested.txt lists, ReCasaOS only), and for an owner other than
+#    ReCasaOS scripts/license.py that each carries a LICENSE;
 # 5. with PUBLISHED_DIR, the folder that scripts/published.sh filled, checks each
 #    new file against the published one of the same name (scripts/compare.py): a
 #    module at a tag already published must keep its commit, archives and
@@ -194,9 +195,18 @@ while read -r name component tag commit tier owner; do
     archives=("${work}/stage/${name}"/*.tar.gz)
     [[ ${#archives[@]} -eq 2 && -f "${archives[0]}" && -f "${work}/stage/${name}/checksums.txt" ]] ||
         fail "Module ${name}: the staged files are not checksums.txt and two archives."
-    if [[ "${owner}" != ReCasaOS ]]; then
+    listed=0
+    rc=0
+    bash "${ROOT}/scripts/unattested.sh" has "${name}" "${tag}" || rc=$?
+    case "${rc}" in 0) listed=1 ;; 1) ;; *) fail "unattested.txt cannot be read (see above)." ;; esac
+    [[ "${listed}" == 0 || "${owner}" == ReCasaOS ]] ||
+        fail "Module ${name}: unattested.txt lists ${tag}, but only a module of ReCasaOS can be exempt from provenance."
+    # ours: provenance too, except the versions published before releases carried it (unattested.txt)
+    if [[ "${listed}" == 0 ]]; then
         bash "${ROOT}/scripts/attest.sh" "${owner}/${component}" "${tag}" "${commit}" "${archives[@]}" ||
             fail "Module ${name}: the provenance of its archives is not established (see above)."
+    fi
+    if [[ "${owner}" != ReCasaOS ]]; then
         for archive in "${archives[@]}"; do
             "${PYTHON}" -I "${ROOT}/scripts/license.py" "${archive}" ||
                 fail "Module ${name}: ${archive##*/} does not carry its licence (see above)."
