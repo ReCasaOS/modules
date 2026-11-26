@@ -231,8 +231,10 @@ chmod +x "${T}/gh"
 repo="${T}/repo"
 mkdir -p "${repo}/scripts"
 cp "${ROOT}/scripts/build.sh" "${ROOT}/scripts/compare.py" "${ROOT}/scripts/names.py" "${ROOT}/scripts/license.py" "${ROOT}/scripts/attest.sh" "${repo}/scripts/"
-cp "${ROOT}/modules.env" "${ROOT}/retired.env" "${ROOT}/withdrawn.txt" "${repo}/"
-cp "${ROOT}/modules.env" "${T}/base.env"
+# the list of the tests, not the one of the repository: that one grows with every module proposed
+cp "${ROOT}/tests/fixtures/modules.env" "${repo}/modules.env"
+cp "${ROOT}/retired.env" "${ROOT}/withdrawn.txt" "${repo}/"
+cp "${ROOT}/tests/fixtures/modules.env" "${T}/base.env"
 
 # make_files NAME TAG [LICENCE=1] [PAD_BYTES=0]: what the release of a module holds, in ${T}/files/NAME: checksums.txt and the two archives
 make_files() {
