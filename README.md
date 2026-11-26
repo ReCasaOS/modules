@@ -136,8 +136,8 @@ tag. Changing only the tier of a published version is allowed.
    box would refuse;
 4. checks the attestation of both archives of each module (`scripts/attest.sh`), ours
    included, except the versions of ReCasaOS listed in `unattested.txt` (published before
-   their releases carried provenance; the list only shrinks, and a pull request that adds a
-   line fails), and for a module of another owner that each archive carries a `LICENSE`
+   their releases carried provenance; the list only shrinks: a pull request or a push to main
+   that adds a line fails), and for a module of another owner that each archive carries a `LICENSE`
    (`scripts/license.py`);
 5. checks each new catalogue against the published one of the same name
    (`scripts/compare.py`): a module at a tag already published must keep the same commit,

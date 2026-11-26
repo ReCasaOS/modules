@@ -2,6 +2,7 @@
 # the installer and the core pinned in refs.env, checks it against the published catalogue
 # (no release may change under a published tag), proves that the core reads it, and writes
 # what the change does to the published catalogue into the run's summary.
+# A push to main runs only the check that unattested.txt did not grow.
 #
 # Read only, and never pull_request_target: a pull request from a fork runs here with no
 # write right and no secret. The built file is not uploaded as an artifact (the installer
@@ -10,13 +11,36 @@ name: Check
 
 on:
   pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  # the list of unattested.txt only shrinks: no line that the base has not. The base is the
+  # target branch of a pull request, or the commit main was at before a push to main.
+  unattested:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check that unattested.txt only shrinks
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('refs/heads/{0}', github.base_ref) || github.event.before }}
+        run: |
+          git fetch -q --depth 1 origin "+${BASE}:refs/remotes/origin/base"
+          bash scripts/unattested.sh check refs/remotes/origin/base
+
+  # the whole check, of a proposed change only: a push to main is built by publish.yml
   check:
+    if: github.event_name != 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -46,15 +70,6 @@ jobs:
         with:
           go-version-file: ${{ runner.temp }}/core-gomod/go.mod
           cache: false
-
-      # the list of unattested.txt only shrinks: no line that the base branch does not have
-      - name: Check that unattested.txt only shrinks
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          git fetch -q --depth 1 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/base"
-          bash scripts/unattested.sh check refs/remotes/origin/base
 
       # every test of tests/, so that a new one cannot be forgotten here
       - name: Test the scripts
