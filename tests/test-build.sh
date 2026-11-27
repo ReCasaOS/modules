@@ -220,7 +220,7 @@ cat >"${T}/gh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >>"${FAKE_GH_CALLS}"
 printf -- '--\n' >>"${FAKE_GH_CALLS}"
-if [[ -n "${FAKE_GH_FAIL:-}" ]]; then
+if [[ -n "${FAKE_GH_FAIL:-}" || "$5" == "${FAKE_GH_FAIL_REPO:-}" ]]; then
     echo "no attestations found" >&2
     exit 1
 fi
@@ -230,7 +230,13 @@ chmod +x "${T}/gh"
 # --- a copy of this repository with its own refs.env ------------------------
 repo="${T}/repo"
 mkdir -p "${repo}/scripts"
-cp "${ROOT}/scripts/build.sh" "${ROOT}/scripts/compare.py" "${ROOT}/scripts/names.py" "${ROOT}/scripts/license.py" "${ROOT}/scripts/attest.sh" "${repo}/scripts/"
+cp "${ROOT}/scripts/build.sh" "${ROOT}/scripts/compare.py" "${ROOT}/scripts/names.py" "${ROOT}/scripts/license.py" "${ROOT}/scripts/attest.sh" "${ROOT}/scripts/unattested.sh" "${repo}/scripts/"
+# the versions of the tests' modules.env that carry no attestation
+printf '# test
+virt v0.2.6
+vuln-scan v0.1.3
+mcp v0.2.1
+' >"${repo}/unattested.txt"
 # the list of the tests, not the one of the repository: that one grows with every module proposed
 cp "${ROOT}/tests/fixtures/modules.env" "${repo}/modules.env"
 cp "${ROOT}/retired.env" "${ROOT}/withdrawn.txt" "${repo}/"
@@ -514,6 +520,34 @@ if ! run_build "${INST_GOOD}" "${CORE_GOOD}" 9 "${out}" FAKE_GH_FAIL=1 && grep -
 else
     fail "an attestation that is refused fails, naming the module and its repository, with no folder"; cat "${T}/log"
 fi
+
+# our own modules are verified too, except the versions of unattested.txt
+cp "${repo}/unattested.txt" "${T}/unattested.full"
+grep -v '^virt ' "${T}/unattested.full" >"${repo}/unattested.txt"
+if run_build "${INST_GOOD}" "${CORE_GOOD}" 9 "${out}" && [[ "$(grep -c '^--$' "${T}/calls")" == 4 ]] &&
+    grep -qx 'ReCasaOS/CasaOS-VirtManagement' "${T}/calls" && ! grep -q 'ReCasaOS-VulnScan\|ReCasaOS-MCP' "${T}/calls"; then
+    pass "our module that is not in unattested.txt is verified (both archives), the ones listed are not"
+else
+    fail "our module that is not in unattested.txt is verified (both archives), the ones listed are not"; cat "${T}/log" "${T}/calls"
+fi
+if ! run_build "${INST_GOOD}" "${CORE_GOOD}" 9 "${out}" FAKE_GH_FAIL_REPO=ReCasaOS/CasaOS-VirtManagement && grep -q "Module virt: the provenance" "${T}/log" && [[ ! -e "${out}" ]]; then
+    pass "our module with no attestation and not in unattested.txt fails the build, with no folder"
+else
+    fail "our module with no attestation and not in unattested.txt fails the build, with no folder"; cat "${T}/log"
+fi
+cp "${T}/unattested.full" "${repo}/unattested.txt"
+if run_build "${INST_GOOD}" "${CORE_GOOD}" 9 "${out}" FAKE_GH_FAIL_REPO=ReCasaOS/CasaOS-VirtManagement; then
+    pass "our module with no attestation, listed in unattested.txt, builds"
+else
+    fail "our module with no attestation, listed in unattested.txt, builds"; cat "${T}/log"
+fi
+echo "alice-tool v0.1.0" >>"${repo}/unattested.txt"
+if ! run_build "${INST_GOOD}" "${CORE_GOOD}" 9 "${out}" && grep -q "only a module of ReCasaOS can be exempt" "${T}/log" && [[ ! -e "${out}" ]]; then
+    pass "a module of another owner listed in unattested.txt is refused"
+else
+    fail "a module of another owner listed in unattested.txt is refused"; cat "${T}/log"
+fi
+cp "${T}/unattested.full" "${repo}/unattested.txt"
 
 make_files alice-tool v0.1.0 0
 if ! run_build "${INST_GOOD}" "${CORE_GOOD}" 9 "${out}" && grep -q "alice-tool" "${T}/log" && grep -q "has no LICENSE at its root" "${T}/log" && [[ ! -e "${out}" ]]; then

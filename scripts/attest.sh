@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Checks that archives of a module of another owner carry a provenance attestation,
-# made by a workflow of that owner's repository at the pinned tag and commit:
+# Checks that archives of a module carry a provenance attestation,
+# made by a workflow of its repository at the pinned tag and commit:
 #
 #   scripts/attest.sh REPOSITORY TAG COMMIT ARCHIVE...
 #

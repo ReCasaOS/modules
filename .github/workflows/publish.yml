@@ -8,7 +8,8 @@
 # installer's scripts, the core built and run with Go) and downloads the archives of the modules,
 # and none of that may run where a token can write here. `build` is read only and hands its whole
 # output on; `publish` holds the write token and runs only this repository's mirror.sh, publish.sh
-# and compare.py, and re-checks every archive of that output against the catalogue.
+# and compare.py, and re-checks every archive of that output against the catalogue. `build` first
+# refuses an unattested.txt that grew (scripts/unattested.sh check).
 #
 # publish.sh refuses a serial that is not above the published one, so a renamed workflow, whose
 # run numbers start again at 1, publishes nothing until it is past it.
@@ -42,6 +43,24 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+
+      # A list of unattested versions that grew is never published, even after a push straight to
+      # main: the base is the commit main was at before the push, or the parent of main on a run by
+      # hand. A base that cannot be read stops the publication.
+      - name: Check that unattested.txt only shrinks
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == push ]]; then
+            [[ "${BEFORE}" =~ ^[0-9a-f]{40}$ && "${BEFORE}" =~ [1-9a-f] ]] ||
+              { echo "No commit before this push to compare unattested.txt with."; exit 1; }
+            git fetch -q --depth 1 origin "+${BEFORE}:refs/remotes/origin/base"
+          else
+            git fetch -q --depth 2 origin "${GITHUB_SHA}"
+            git update-ref refs/remotes/origin/base "$(git rev-parse --verify "${GITHUB_SHA}~1^{commit}")"
+          fi
+          bash scripts/unattested.sh check refs/remotes/origin/base
 
       # 3.12: the Unicode tables of the Go that builds the core (see build-modules-catalogue.py)
       - name: Set up Python

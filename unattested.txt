@@ -1,0 +1,10 @@
+# The module versions of ReCasaOS that were published before their releases carried a
+# provenance attestation, so that scripts/build.sh does not verify them (scripts/attest.sh).
+#
+#   <name> <tag>
+#
+# The list only shrinks: never add a new version (the check of a pull request and of a push
+# to main refuses it, scripts/unattested.sh check). A module of another owner is never listed here.
+virt v0.2.7
+vuln-scan v0.2.1
+mcp v0.2.2
